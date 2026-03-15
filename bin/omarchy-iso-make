@@ -30,9 +30,22 @@ while [[ $# -gt 0 ]]; do
     OMARCHY_INSTALLER_REF=rc
     shift
     ;;
+  --custom-kernel)
+    USE_CUSTOM_KERNEL=1
+    shift
+    ;;
+  --build-kernel)
+    USE_CUSTOM_KERNEL=1
+    BUILD_KERNEL=1
+    shift
+    ;;
+  --no-t2)
+    OMARCHY_NO_T2=1
+    shift
+    ;;
   *)
     echo "Unknown option: $1"
-    echo "Usage: $0 [--no-cache] [--no-boot-offer] [--local-source] [--dev] [--rc]"
+    echo "Usage: $0 [--no-cache] [--no-boot-offer] [--local-source] [--dev] [--rc] [--custom-kernel] [--build-kernel] [--no-t2]"
     exit 1
     ;;
   esac
@@ -50,6 +63,8 @@ mkdir -p "$BUILD_RELEASE_PATH"
 OMARCHY_INSTALLER_REPO="${OMARCHY_INSTALLER_REPO:-basecamp/omarchy}"
 OMARCHY_INSTALLER_REF="${OMARCHY_INSTALLER_REF:-master}"
 OMARCHY_MIRROR="${OMARCHY_MIRROR:-stable}"
+LINUX_KERNEL_REPO="${LINUX_KERNEL_REPO:-https://github.com/torvalds/linux}"
+LINUX_KERNEL_BRANCH="${LINUX_KERNEL_BRANCH:-master}"
 
 DOCKER_ARGS=(
   --rm
@@ -71,6 +86,44 @@ if [[ -n "${LOCAL_SOURCE-}" ]]; then
   DOCKER_ARGS+=(-v "$OMARCHY_PATH:/omarchy:ro")
 fi
 
+# Mount a pre-built custom kernel package if --custom-kernel or --build-kernel was passed
+if [[ -n "${USE_CUSTOM_KERNEL-}" ]]; then
+  KERNEL_SAFE_BRANCH="${LINUX_KERNEL_BRANCH//\//-}"
+  KERNEL_PKG_DIR="$BUILD_ROOT/release/kernels"
+  KERNEL_PKG="$KERNEL_PKG_DIR/linux-custom-${KERNEL_SAFE_BRANCH}.pkg.tar.zst"
+
+  if [[ ! -f "$KERNEL_PKG" ]]; then
+    if [[ -n "${BUILD_KERNEL-}" ]]; then
+      # --build-kernel: compile from source now, then continue to ISO build
+      echo "No cached kernel package found. Building kernel from source first..."
+      echo
+      LINUX_KERNEL_REPO="$LINUX_KERNEL_REPO" LINUX_KERNEL_BRANCH="$LINUX_KERNEL_BRANCH" \
+        "$BUILD_ROOT/bin/omarchy-iso-build-kernel"
+    else
+      # --custom-kernel: package must already exist
+      echo "Error: Custom kernel package not found:"
+      echo "  $KERNEL_PKG"
+      echo
+      echo "Build it first with:"
+      echo "  LINUX_KERNEL_BRANCH=$LINUX_KERNEL_BRANCH ./bin/omarchy-iso-build-kernel"
+      echo
+      echo "Or use --build-kernel to build the kernel and ISO in one step."
+      exit 1
+    fi
+  fi
+
+  DOCKER_ARGS+=(
+    -e "USE_CUSTOM_KERNEL=1"
+    -e "LINUX_KERNEL_BRANCH=$LINUX_KERNEL_BRANCH"
+    -v "$KERNEL_PKG_DIR:/custom-kernel:ro"
+  )
+fi
+
+# Skip T2 kernel if --no-t2 was passed
+if [[ -n "${OMARCHY_NO_T2-}" ]]; then
+  DOCKER_ARGS+=(-e "OMARCHY_NO_T2=1")
+fi
+
 # Use local pacman cache if you already have one on host to speed up repeat runs
 if [ -d "/var/cache/pacman/pkg" ]; then
   DOCKER_ARGS+=(-v "/var/cache/pacman/pkg:/var/cache/pacman/pkg")
@@ -89,9 +142,14 @@ fi
 # Run the builder with assembled args
 docker run "${DOCKER_ARGS[@]}" archlinux/archlinux:latest /$BUILD_SCRIPT
 
-# Move as install ref
+# Move as install ref, appending kernel branch when a custom kernel was used
 latest_iso=$(\ls -t "$BUILD_RELEASE_PATH"/*.iso | head -n1)
-iso_ref="${latest_iso%.*}-$OMARCHY_INSTALLER_REF.iso"
+iso_ref="${latest_iso%.*}-$OMARCHY_INSTALLER_REF"
+if [[ -n "${USE_CUSTOM_KERNEL-}" ]]; then
+  KERNEL_SAFE_BRANCH="${LINUX_KERNEL_BRANCH//\//-}"
+  iso_ref="${iso_ref}-linux-${KERNEL_SAFE_BRANCH}"
+fi
+iso_ref="${iso_ref}.iso"
 mv -f "$latest_iso" "$iso_ref"
 
 # Offer to boot the new build

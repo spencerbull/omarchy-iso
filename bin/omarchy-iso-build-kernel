@@ -1,0 +1,145 @@
+#!/bin/bash
+
+# Abort if anything fails
+set -e
+
+BUILD_ROOT=$(realpath "${BASH_SOURCE[0]%/*}/..")
+KERNEL_REPO="${LINUX_KERNEL_REPO:-https://github.com/torvalds/linux}"
+KERNEL_BRANCH="${LINUX_KERNEL_BRANCH:-master}"
+
+# Sanitize branch name for use in filenames (replace / with -)
+KERNEL_SAFE_BRANCH="${KERNEL_BRANCH//\//-}"
+KERNEL_PKG_NAME="linux-custom-${KERNEL_SAFE_BRANCH}"
+KERNEL_PKG_FILE="${KERNEL_PKG_NAME}.pkg.tar.zst"
+KERNEL_OUT_DIR="$BUILD_ROOT/release/kernels"
+
+mkdir -p "$KERNEL_OUT_DIR"
+
+echo "Building custom Linux kernel:"
+echo "  Repo:   $KERNEL_REPO"
+echo "  Branch: $KERNEL_BRANCH"
+echo "  Output: release/kernels/$KERNEL_PKG_FILE"
+echo
+echo "NOTE: This will take 30-90+ minutes depending on your hardware."
+echo
+
+# The PKGBUILD used inside the container to produce a pacman-compatible package
+read -r -d '' PKGBUILD_CONTENT << 'PKGBUILD_EOF' || true
+pkgname=linux-custom
+pkgver=custom
+pkgrel=1
+pkgdesc="Custom Linux kernel built from source"
+arch=('x86_64')
+license=('GPL2')
+makedepends=(bc cpio gettext libelf pahole perl python flex bison openssl zstd)
+options=('!strip' '!debug')
+
+build() {
+  cd "$srcdir/linux"
+
+  # Use the standard Arch Linux kernel config as our base for broad hardware support
+  echo "Fetching Arch Linux kernel config as base..."
+  curl -fsSL "https://gitlab.archlinux.org/archlinux/packaging/packages/linux/-/raw/main/config" -o .config
+
+  # Ensure options required by archiso/mkinitcpio are enabled
+  scripts/config --enable CONFIG_BLK_DEV_LOOP
+  scripts/config --enable CONFIG_SQUASHFS
+  scripts/config --enable CONFIG_OVERLAY_FS
+  scripts/config --enable CONFIG_TMPFS
+  scripts/config --enable CONFIG_DEVTMPFS
+  scripts/config --enable CONFIG_EFI_STUB
+  scripts/config --enable CONFIG_EFI
+  scripts/config --enable CONFIG_FB_EFI
+
+  # Accept all new config options with their defaults
+  make olddefconfig
+
+  make -j"$(nproc)" all
+}
+
+package() {
+  cd "$srcdir/linux"
+
+  local kernel_version
+  kernel_version=$(make -s kernelrelease)
+
+  # Install kernel image
+  install -Dm644 "arch/x86/boot/bzImage" "$pkgdir/boot/vmlinuz-linux-custom"
+
+  # Install modules
+  make INSTALL_MOD_PATH="$pkgdir" INSTALL_MOD_STRIP=1 modules_install
+
+  # Remove the source and build symlinks (not needed in runtime package)
+  rm -f "$pkgdir/lib/modules/$kernel_version/source"
+  rm -f "$pkgdir/lib/modules/$kernel_version/build"
+
+  # Install a preset for mkinitcpio so initramfs can be generated
+  install -Dm644 /dev/stdin "$pkgdir/etc/mkinitcpio.d/linux-custom.preset" << EOF
+# mkinitcpio preset for linux-custom
+PRESETS=('default' 'fallback')
+ALL_kver='/boot/vmlinuz-linux-custom'
+default_image="/boot/initramfs-linux-custom.img"
+fallback_image="/boot/initramfs-linux-custom-fallback.img"
+fallback_options="-S autodetect"
+EOF
+}
+PKGBUILD_EOF
+
+docker run \
+  --rm \
+  --privileged \
+  -e "KERNEL_REPO=$KERNEL_REPO" \
+  -e "KERNEL_BRANCH=$KERNEL_BRANCH" \
+  -e "KERNEL_PKG_NAME=$KERNEL_PKG_NAME" \
+  -e "HOST_UID=$(id -u)" \
+  -e "HOST_GID=$(id -g)" \
+  -v "$KERNEL_OUT_DIR:/out" \
+  archlinux/archlinux:latest \
+  /bin/bash -c "
+    set -e
+
+    # Init keyring and install build tools
+    pacman-key --init
+    pacman --noconfirm -Sy archlinux-keyring
+    pacman --noconfirm -Sy base-devel git bc cpio gettext libelf pahole perl python flex bison openssl zstd curl
+
+    # Create a build user (makepkg refuses to run as root)
+    useradd -m builder
+    mkdir -p /build
+    chown builder:builder /build
+
+    # Clone the kernel source (shallow to save time and disk)
+    echo 'Cloning kernel source (shallow)...'
+    git clone --depth=1 --branch \"\$KERNEL_BRANCH\" \"\$KERNEL_REPO\" /build/linux
+    chown -R builder:builder /build/linux
+
+    # Write the PKGBUILD
+    cat > /build/PKGBUILD << 'EOF'
+$(echo "$PKGBUILD_CONTENT")
+EOF
+    echo \"source=()\" >> /build/PKGBUILD
+    echo \"sha256sums=()\" >> /build/PKGBUILD
+
+    # Replace srcdir usage — since source=() is empty, we prepare manually
+    # by symlinking the already-cloned tree into makepkg's expected srcdir
+    mkdir -p /build/src
+    ln -s /build/linux /build/src/linux
+    chown -R builder:builder /build
+
+    # Build the package
+    cd /build
+    sudo -u builder makepkg --noconfirm --nodeps -f
+
+    # Copy the resulting package to output
+    PKG_FILE=\$(ls /build/linux-custom-*.pkg.tar.zst | head -n1)
+    DEST=\"/out/\${KERNEL_PKG_NAME}.pkg.tar.zst\"
+    cp \"\$PKG_FILE\" \"\$DEST\"
+
+    # Fix ownership
+    if [ -n \"\$HOST_UID\" ] && [ -n \"\$HOST_GID\" ]; then
+      chown \"\$HOST_UID:\$HOST_GID\" \"\$DEST\"
+    fi
+
+    echo
+    echo \"Kernel package ready: release/kernels/\${KERNEL_PKG_NAME}.pkg.tar.zst\"
+  "

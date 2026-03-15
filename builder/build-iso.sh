@@ -71,6 +71,46 @@ cp "/tmp/$NODE_FILENAME" "$build_cache_dir/airootfs/opt/packages/"
 
 # Add our additional packages to packages.x86_64
 arch_packages=(linux-t2 git gum jq openssl plymouth tzupdate omarchy-keyring)
+
+# When building with a custom kernel, swap linux-t2 for linux-custom and patch all
+# bootloader/initramfs configs to reference the new kernel image names.
+if [[ -n "${USE_CUSTOM_KERNEL-}" ]]; then
+  KERNEL_SAFE_BRANCH="${LINUX_KERNEL_BRANCH//\//-}"
+  KERNEL_PKG_FILE="linux-custom-${KERNEL_SAFE_BRANCH}.pkg.tar.zst"
+
+  # Copy the pre-built package into the offline mirror so pacman can install it
+  cp "/custom-kernel/$KERNEL_PKG_FILE" "$offline_mirror_dir/"
+
+  # Replace linux-t2 with linux-custom in the package list
+  arch_packages=("${arch_packages[@]/linux-t2/linux-custom}")
+
+  # Patch bootloader configs: swap all linux-t2 image references to linux-custom
+  for cfg_file in \
+    "$build_cache_dir/grub/grub.cfg" \
+    "$build_cache_dir/grub/loopback.cfg" \
+    "$build_cache_dir/efiboot/loader/entries/01-archiso-x86_64-linux.conf" \
+    "$build_cache_dir/syslinux/archiso_sys-linux.cfg" \
+    "$build_cache_dir/syslinux/archiso_pxe-linux.cfg"; do
+    if [[ -f "$cfg_file" ]]; then
+      sed -i \
+        's/vmlinuz-linux-t2/vmlinuz-linux-custom/g;
+         s/initramfs-linux-t2\.img/initramfs-linux-custom.img/g' \
+        "$cfg_file"
+    fi
+  done
+
+  # Patch mkinitcpio preset so archiso generates the right initramfs
+  sed -i \
+    "s|ALL_kver='/boot/vmlinuz-linux-t2'|ALL_kver='/boot/vmlinuz-linux-custom'|;
+     s|archiso_image=\"/boot/initramfs-linux-t2\.img\"|archiso_image=\"/boot/initramfs-linux-custom.img\"|" \
+    "$build_cache_dir/airootfs/etc/mkinitcpio.d/linux.preset"
+
+# When --no-t2 is passed without a custom kernel, simply drop linux-t2 from the build.
+# Useful for quick vanilla-kernel test ISOs on non-T2 hardware.
+elif [[ -n "${OMARCHY_NO_T2-}" ]]; then
+  arch_packages=("${arch_packages[@]/linux-t2}")
+fi
+
 printf '%s\n' "${arch_packages[@]}" >>"$build_cache_dir/packages.x86_64"
 
 # Build list of all the packages needed for the offline mirror
