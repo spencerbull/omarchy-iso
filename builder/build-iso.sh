@@ -109,6 +109,15 @@ if [[ -n "${USE_CUSTOM_KERNEL-}" ]]; then
      s|archiso_image=\"/boot/initramfs-linux-t2\.img\"|archiso_image=\"/boot/initramfs-linux-custom.img\"|" \
     "$build_cache_dir/airootfs/etc/mkinitcpio.d/linux.preset"
 
+  # Bake a marker file so the live ISO knows to install linux-custom at install time
+  echo "linux-custom" > "$build_cache_dir/airootfs/root/omarchy_kernel"
+
+  # Swap `linux` for `linux-custom` in the offline package list used by archinstall
+  # so the installed system gets our kernel rather than the vanilla pacman `linux`.
+  # /builder is mounted read-only so we work on a writable copy.
+  cp /builder/archinstall.packages /tmp/archinstall.packages
+  sed -i 's/^linux$/linux-custom/' /tmp/archinstall.packages
+
 # When --no-t2 is passed without a custom kernel, simply drop linux-t2 from the build.
 # Useful for quick vanilla-kernel test ISOs on non-T2 hardware.
 elif [[ -n "${OMARCHY_NO_T2-}" ]]; then
@@ -121,7 +130,9 @@ printf '%s\n' "${arch_packages[@]}" >>"$build_cache_dir/packages.x86_64"
 all_packages=($(cat "$build_cache_dir/packages.x86_64"))
 all_packages+=($(grep -v '^#' "$build_cache_dir/airootfs/root/omarchy/install/omarchy-base.packages" | grep -v '^$'))
 all_packages+=($(grep -v '^#' "$build_cache_dir/airootfs/root/omarchy/install/omarchy-other.packages" | grep -v '^$'))
-all_packages+=($(grep -v '^#' /builder/archinstall.packages | grep -v '^$'))
+ARCHINSTALL_PACKAGES="${USE_CUSTOM_KERNEL:+/tmp/archinstall.packages}"
+ARCHINSTALL_PACKAGES="${ARCHINSTALL_PACKAGES:-/builder/archinstall.packages}"
+all_packages+=($(grep -v '^#' "$ARCHINSTALL_PACKAGES" | grep -v '^$'))
 
 # When using a custom kernel the package is already in the offline mirror (copied
 # above); remove it from the download list so pacman doesn't try to fetch it from
