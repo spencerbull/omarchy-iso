@@ -78,7 +78,11 @@ if [[ -n "${USE_CUSTOM_KERNEL-}" ]]; then
   KERNEL_SAFE_BRANCH="${LINUX_KERNEL_BRANCH//\//-}"
   KERNEL_PKG_FILE="linux-custom-${KERNEL_SAFE_BRANCH}.pkg.tar.zst"
 
-  # Copy the pre-built package into the offline mirror so pacman can install it
+  # Pre-populate the package into pacman's cache so mkarchiso finds it locally
+  # without going through the file:// repo (which hits a curl file size limit).
+  mkdir -p /var/cache/pacman/pkg
+  cp "/custom-kernel/$KERNEL_PKG_FILE" "/var/cache/pacman/pkg/"
+  # Also keep a copy in the offline mirror so it's available in the live ISO
   cp "/custom-kernel/$KERNEL_PKG_FILE" "$offline_mirror_dir/"
 
   # Replace linux-t2 with linux-custom in the package list
@@ -118,6 +122,17 @@ all_packages=($(cat "$build_cache_dir/packages.x86_64"))
 all_packages+=($(grep -v '^#' "$build_cache_dir/airootfs/root/omarchy/install/omarchy-base.packages" | grep -v '^$'))
 all_packages+=($(grep -v '^#' "$build_cache_dir/airootfs/root/omarchy/install/omarchy-other.packages" | grep -v '^$'))
 all_packages+=($(grep -v '^#' /builder/archinstall.packages | grep -v '^$'))
+
+# When using a custom kernel the package is already in the offline mirror (copied
+# above); remove it from the download list so pacman doesn't try to fetch it from
+# online repos where it doesn't exist.
+if [[ -n "${USE_CUSTOM_KERNEL-}" ]]; then
+  filtered=()
+  for pkg in "${all_packages[@]}"; do
+    [[ "$pkg" != "linux-custom" ]] && filtered+=("$pkg")
+  done
+  all_packages=("${filtered[@]}")
+fi
 
 # Download all the packages to the offline mirror inside the ISO
 mkdir -p /tmp/offlinedb

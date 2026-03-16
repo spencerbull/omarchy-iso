@@ -39,7 +39,7 @@ build() {
 
   # Use the standard Arch Linux kernel config as our base for broad hardware support
   echo "Fetching Arch Linux kernel config as base..."
-  curl -fsSL "https://gitlab.archlinux.org/archlinux/packaging/packages/linux/-/raw/main/config" -o .config
+  curl -fsSL "https://gitlab.archlinux.org/archlinux/packaging/packages/linux/-/raw/main/config.x86_64" -o .config
 
   # Ensure options required by archiso/mkinitcpio are enabled
   scripts/config --enable CONFIG_BLK_DEV_LOOP
@@ -66,12 +66,13 @@ package() {
   # Install kernel image
   install -Dm644 "arch/x86/boot/bzImage" "$pkgdir/boot/vmlinuz-linux-custom"
 
-  # Install modules
-  make INSTALL_MOD_PATH="$pkgdir" INSTALL_MOD_STRIP=1 modules_install
+  # Install modules into usr/lib (not lib) — Arch's filesystem package makes
+  # /lib a symlink to usr/lib, so owning /lib directly causes a conflict.
+  make INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 modules_install
 
   # Remove the source and build symlinks (not needed in runtime package)
-  rm -f "$pkgdir/lib/modules/$kernel_version/source"
-  rm -f "$pkgdir/lib/modules/$kernel_version/build"
+  rm -f "$pkgdir/usr/lib/modules/$kernel_version/source"
+  rm -f "$pkgdir/usr/lib/modules/$kernel_version/build"
 
   # Install a preset for mkinitcpio so initramfs can be generated
   install -Dm644 /dev/stdin "$pkgdir/etc/mkinitcpio.d/linux-custom.preset" << EOF
@@ -85,6 +86,15 @@ EOF
 }
 PKGBUILD_EOF
 
+# Write the PKGBUILD to a temp file on the host so we can mount it into
+# the container — avoids nested heredoc quoting issues entirely.
+PKGBUILD_TMP=$(mktemp /tmp/omarchy-pkgbuild.XXXXXX)
+trap 'rm -f "$PKGBUILD_TMP"' EXIT
+
+printf '%s\n' "$PKGBUILD_CONTENT" > "$PKGBUILD_TMP"
+printf 'source=()\n' >> "$PKGBUILD_TMP"
+printf 'sha256sums=()\n' >> "$PKGBUILD_TMP"
+
 docker run \
   --rm \
   --privileged \
@@ -94,8 +104,9 @@ docker run \
   -e "HOST_UID=$(id -u)" \
   -e "HOST_GID=$(id -g)" \
   -v "$KERNEL_OUT_DIR:/out" \
+  -v "$PKGBUILD_TMP:/build/PKGBUILD:ro" \
   archlinux/archlinux:latest \
-  /bin/bash -c "
+  /bin/bash -c '
     set -e
 
     # Init keyring and install build tools
@@ -105,41 +116,37 @@ docker run \
 
     # Create a build user (makepkg refuses to run as root)
     useradd -m builder
-    mkdir -p /build
-    chown builder:builder /build
+
+    # Set up a writable workspace; copy the read-only mounted PKGBUILD into it
+    mkdir -p /workspace
+    cp /build/PKGBUILD /workspace/PKGBUILD
+    chown -R builder:builder /workspace
 
     # Clone the kernel source (shallow to save time and disk)
-    echo 'Cloning kernel source (shallow)...'
-    git clone --depth=1 --branch \"\$KERNEL_BRANCH\" \"\$KERNEL_REPO\" /build/linux
-    chown -R builder:builder /build/linux
-
-    # Write the PKGBUILD
-    cat > /build/PKGBUILD << 'EOF'
-$(echo "$PKGBUILD_CONTENT")
-EOF
-    echo \"source=()\" >> /build/PKGBUILD
-    echo \"sha256sums=()\" >> /build/PKGBUILD
+    echo "Cloning kernel source (shallow)..."
+    git clone --depth=1 --branch "$KERNEL_BRANCH" "$KERNEL_REPO" /workspace/linux
+    chown -R builder:builder /workspace/linux
 
     # Replace srcdir usage — since source=() is empty, we prepare manually
-    # by symlinking the already-cloned tree into makepkg's expected srcdir
-    mkdir -p /build/src
-    ln -s /build/linux /build/src/linux
-    chown -R builder:builder /build
+    # by symlinking the already-cloned tree into makepkg'"'"'s expected srcdir
+    mkdir -p /workspace/src
+    ln -s /workspace/linux /workspace/src/linux
+    chown -R builder:builder /workspace
 
     # Build the package
-    cd /build
+    cd /workspace
     sudo -u builder makepkg --noconfirm --nodeps -f
 
     # Copy the resulting package to output
-    PKG_FILE=\$(ls /build/linux-custom-*.pkg.tar.zst | head -n1)
-    DEST=\"/out/\${KERNEL_PKG_NAME}.pkg.tar.zst\"
-    cp \"\$PKG_FILE\" \"\$DEST\"
+    PKG_FILE=$(ls /workspace/linux-custom-*.pkg.tar.zst | head -n1)
+    DEST="/out/${KERNEL_PKG_NAME}.pkg.tar.zst"
+    cp "$PKG_FILE" "$DEST"
 
     # Fix ownership
-    if [ -n \"\$HOST_UID\" ] && [ -n \"\$HOST_GID\" ]; then
-      chown \"\$HOST_UID:\$HOST_GID\" \"\$DEST\"
+    if [ -n "$HOST_UID" ] && [ -n "$HOST_GID" ]; then
+      chown "$HOST_UID:$HOST_GID" "$DEST"
     fi
 
     echo
-    echo \"Kernel package ready: release/kernels/\${KERNEL_PKG_NAME}.pkg.tar.zst\"
-  "
+    echo "Kernel package ready: release/kernels/${KERNEL_PKG_NAME}.pkg.tar.zst"
+  '
