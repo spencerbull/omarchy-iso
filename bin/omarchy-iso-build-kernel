@@ -135,12 +135,20 @@ docker run \
       chown builder:builder PKGBUILD
     fi
 
+    # Strip htmldocs build dependencies and the docs sub-package to avoid
+    # pulling in texlive/sphinx and to save significant build time.
+    sed -i \
+      -e "/# htmldocs/,/texlive-latexextra/d" \
+      -e "s/make htmldocs.*$/: # htmldocs disabled/" \
+      -e "s/\"\$pkgbase-docs\"//" \
+      PKGBUILD
+    chown builder:builder PKGBUILD
+
     # Update the PKGBUILD checksums since we are not verifying the AUR source
     # (the git clone already provides authenticity via the AUR)
     sudo -u builder updpkgsums 2>/dev/null || true
 
-    # Build the kernel packages (skip docs to save time, skip integrity checks
-    # since we modified the PKGBUILD)
+    # Build the kernel packages (skip integrity checks since we modified the PKGBUILD)
     echo "Building kernel (this will take a while)..."
     sudo -u builder makepkg --noconfirm --skipchecksums --skippgpcheck -f 2>&1
 
