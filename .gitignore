@@ -1,2 +1,4 @@
 release/**
+# Exclude built kernel packages from version control
+release/kernels/
 vm-saves/**

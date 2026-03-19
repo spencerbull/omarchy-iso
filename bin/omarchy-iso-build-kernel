@@ -1,0 +1,163 @@
+#!/bin/bash
+set -e
+
+# Set up variables
+BUILD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+KERNEL_BRANCH="${LINUX_KERNEL_BRANCH:-v7.0-rc4}"
+KERNEL_OUT_DIR="$BUILD_ROOT/release/kernels"
+KERNEL_CONFIG_DIR="$BUILD_ROOT/configs/kernel"
+
+# Print build info
+echo "Building Linux kernel package:"
+echo "  Branch: $KERNEL_BRANCH"
+echo "  Config dir: $KERNEL_CONFIG_DIR"
+echo "  Output dir: $KERNEL_OUT_DIR"
+echo "  Note: Kernel build may take 30+ minutes depending on hardware"
+echo
+
+# Function to generate config commands from config fragments
+generate_config_commands() {
+  local config_dir="$1"
+  local commands=""
+  
+  if [[ ! -d "$config_dir" ]]; then
+    return
+  fi
+  
+  for config_file in "$config_dir"/*.config; do
+    [[ -f "$config_file" ]] || continue
+    
+    local basename="$(basename "$config_file")"
+    commands+="echo \"Applying config fragment: $basename\"\n"
+    
+    while IFS= read -r line; do
+      # Skip empty lines
+      [[ -z "$line" ]] && continue
+      
+      # Handle "# CONFIG_FOO is not set"
+      if [[ "$line" =~ ^#[[:space:]]*CONFIG_([A-Z0-9_]+)[[:space:]]+is[[:space:]]+not[[:space:]]+set ]]; then
+        commands+="scripts/config --disable CONFIG_${BASH_REMATCH[1]}\n"
+      # Skip other comment lines
+      elif [[ "$line" =~ ^[[:space:]]*# ]]; then
+        continue
+      # Handle CONFIG_FOO=y
+      elif [[ "$line" =~ ^CONFIG_([A-Z0-9_]+)=y$ ]]; then
+        commands+="scripts/config --enable CONFIG_${BASH_REMATCH[1]}\n"
+      # Handle CONFIG_FOO=m
+      elif [[ "$line" =~ ^CONFIG_([A-Z0-9_]+)=m$ ]]; then
+        commands+="scripts/config --module CONFIG_${BASH_REMATCH[1]}\n"
+      # Handle CONFIG_FOO=n
+      elif [[ "$line" =~ ^CONFIG_([A-Z0-9_]+)=n$ ]]; then
+        commands+="scripts/config --disable CONFIG_${BASH_REMATCH[1]}\n"
+      # Handle CONFIG_FOO="string"
+      elif [[ "$line" =~ ^CONFIG_([A-Z0-9_]+)=\"(.*)\"$ ]]; then
+        commands+="scripts/config --set-str CONFIG_${BASH_REMATCH[1]} \"${BASH_REMATCH[2]}\"\n"
+      # Handle CONFIG_FOO=123 (numeric)
+      elif [[ "$line" =~ ^CONFIG_([A-Z0-9_]+)=([0-9]+)$ ]]; then
+        commands+="scripts/config --set-val CONFIG_${BASH_REMATCH[1]} ${BASH_REMATCH[2]}\n"
+      fi
+    done < "$config_file"
+  done
+  
+  echo -e "$commands"
+}
+
+# Generate config injection commands and write to temp file
+CONFIG_INJECT_TMP=$(mktemp)
+trap "rm -f $CONFIG_INJECT_TMP" EXIT
+
+config_commands=$(generate_config_commands "$KERNEL_CONFIG_DIR")
+if [[ -n "$config_commands" ]]; then
+  echo "$config_commands" > "$CONFIG_INJECT_TMP"
+else
+  echo "Warning: No config fragments found in $KERNEL_CONFIG_DIR"
+  touch "$CONFIG_INJECT_TMP"
+fi
+
+# Create output directory
+mkdir -p "$KERNEL_OUT_DIR"
+
+# Get host UID/GID for proper ownership
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+
+echo "Starting Docker build..."
+
+# Run Docker build
+docker run --rm --privileged \
+  -e KERNEL_BRANCH="$KERNEL_BRANCH" \
+  -e HOST_UID="$HOST_UID" \
+  -e HOST_GID="$HOST_GID" \
+  -v "$KERNEL_OUT_DIR:/out" \
+  -v "$CONFIG_INJECT_TMP:/build/config-inject.sh:ro" \
+  archlinux/archlinux:latest \
+  bash -c '
+    set -e
+    
+    # Init pacman and install dependencies
+    echo "Initializing pacman keyring..."
+    pacman-key --init
+    pacman-key --populate archlinux
+    pacman -Sy --noconfirm archlinux-keyring
+    
+    echo "Installing build dependencies..."
+    pacman -S --noconfirm base-devel git bc cpio gettext libelf pahole perl python rust rust-bindgen rust-src flex bison openssl zstd curl tar xz
+    
+    # Create build user (makepkg refuses to run as root)
+    useradd -m builder
+    echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+    
+    # Clone AUR linux-mainline
+    echo "Cloning linux-mainline from AUR..."
+    cd /home/builder
+    sudo -u builder git clone https://aur.archlinux.org/linux-mainline.git
+    cd linux-mainline
+    
+    # Inject config overrides if any exist
+    if [[ -s /build/config-inject.sh ]]; then
+      echo "Injecting kernel config overrides into PKGBUILD..."
+      awk '\''
+        /make olddefconfig/ {
+          # Insert config injection script before this line
+          print "  echo \"Applying custom kernel config fragments...\""
+          print "  source /build/config-inject.sh"
+          print ""
+        }
+        { print }
+      '\'' PKGBUILD > PKGBUILD.new && mv PKGBUILD.new PKGBUILD
+    fi
+    
+    # Strip htmldocs to reduce build time and dependencies
+    echo "Removing htmldocs to speed up build..."
+    sed -i '\''/# htmldocs/,/texlive-latexextra/d'\'' PKGBUILD
+    sed -i '\''s/make htmldocs/echo "htmldocs disabled for faster build"/'\'' PKGBUILD
+    sed -i '\''s/"$pkgbase-docs"//g'\'' PKGBUILD
+    
+    # Fix ownership after root-owned awk/sed modifications
+    chown builder:builder PKGBUILD
+    
+    # Update checksums (suppress errors as we modified PKGBUILD)
+    echo "Updating package checksums..."
+    sudo -u builder updpkgsums || true
+    
+    # Build the package using all available cores
+    echo "Building kernel package with $(nproc) threads..."
+    export MAKEFLAGS="-j$(nproc)"
+    sudo -u builder MAKEFLAGS="$MAKEFLAGS" makepkg --noconfirm --skipchecksums --skippgpcheck -f
+    
+    # Copy packages to output directory
+    echo "Copying packages to output directory..."
+    cp linux-mainline-*.pkg.tar.zst /out/
+    
+    # Fix ownership
+    chown -R $HOST_UID:$HOST_GID /out
+    
+    echo "Kernel build completed successfully!"
+    echo "Packages available in: /out"
+    ls -la /out/*.pkg.tar.zst
+  '
+
+echo
+echo "Kernel build completed!"
+echo "Packages available in: $KERNEL_OUT_DIR"
+ls -la "$KERNEL_OUT_DIR"/*.pkg.tar.zst 2>/dev/null || echo "No packages found in output directory"

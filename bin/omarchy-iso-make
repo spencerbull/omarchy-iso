@@ -30,9 +30,17 @@ while [[ $# -gt 0 ]]; do
     OMARCHY_INSTALLER_REF=rc
     shift
     ;;
+  --build-kernel)
+    BUILD_KERNEL=1
+    shift
+    ;;
+  --no-custom-kernel)
+    NO_CUSTOM_KERNEL=1
+    shift
+    ;;
   *)
     echo "Unknown option: $1"
-    echo "Usage: $0 [--no-cache] [--no-boot-offer] [--local-source] [--dev] [--rc]"
+    echo "Usage: $0 [--no-cache] [--no-boot-offer] [--local-source] [--dev] [--rc] [--build-kernel] [--no-custom-kernel]"
     exit 1
     ;;
   esac
@@ -50,6 +58,7 @@ mkdir -p "$BUILD_RELEASE_PATH"
 OMARCHY_INSTALLER_REPO="${OMARCHY_INSTALLER_REPO:-basecamp/omarchy}"
 OMARCHY_INSTALLER_REF="${OMARCHY_INSTALLER_REF:-master}"
 OMARCHY_MIRROR="${OMARCHY_MIRROR:-stable}"
+LINUX_KERNEL_BRANCH="${LINUX_KERNEL_BRANCH:-v7.0-rc4}"
 
 DOCKER_ARGS=(
   --rm
@@ -71,6 +80,27 @@ if [[ -n "${LOCAL_SOURCE-}" ]]; then
   DOCKER_ARGS+=(-v "$OMARCHY_PATH:/omarchy:ro")
 fi
 
+# Build kernel from source if --build-kernel was passed
+if [[ -n "${BUILD_KERNEL-}" ]]; then
+  echo "Building custom kernel before ISO build..."
+  LINUX_KERNEL_BRANCH="$LINUX_KERNEL_BRANCH" "$BUILD_ROOT/bin/omarchy-iso-build-kernel"
+fi
+
+# Include cached custom kernel in ISO if available (unless --no-custom-kernel)
+if [[ -z "${NO_CUSTOM_KERNEL-}" ]]; then
+  KERNEL_PKG_DIR="$BUILD_ROOT/release/kernels"
+  KERNEL_PKG=$(ls "$KERNEL_PKG_DIR"/linux-mainline-[0-9]*.pkg.tar.zst 2>/dev/null | head -n1)
+
+  if [[ -n "$KERNEL_PKG" ]]; then
+    echo "Including custom kernel from $KERNEL_PKG_DIR"
+    DOCKER_ARGS+=(
+      -e "USE_CUSTOM_KERNEL=1"
+      -e "LINUX_KERNEL_BRANCH=$LINUX_KERNEL_BRANCH"
+      -v "$KERNEL_PKG_DIR:/custom-kernel:ro"
+    )
+  fi
+fi
+
 # Use local pacman cache if you already have one on host to speed up repeat runs
 if [ -d "/var/cache/pacman/pkg" ]; then
   DOCKER_ARGS+=(-v "/var/cache/pacman/pkg:/var/cache/pacman/pkg")
@@ -89,9 +119,14 @@ fi
 # Run the builder with assembled args
 docker run "${DOCKER_ARGS[@]}" archlinux/archlinux:latest /$BUILD_SCRIPT
 
-# Move as install ref
+# Move as install ref, appending kernel branch when a custom kernel was included
 latest_iso=$(\ls -t "$BUILD_RELEASE_PATH"/*.iso | head -n1)
-iso_ref="${latest_iso%.*}-$OMARCHY_INSTALLER_REF.iso"
+iso_ref="${latest_iso%.*}-$OMARCHY_INSTALLER_REF"
+if [[ -z "${NO_CUSTOM_KERNEL-}" ]] && [[ -n "$(ls "$BUILD_ROOT/release/kernels"/linux-mainline-[0-9]*.pkg.tar.zst 2>/dev/null)" ]]; then
+  KERNEL_SAFE_BRANCH="${LINUX_KERNEL_BRANCH//\//-}"
+  iso_ref="${iso_ref}-linux-${KERNEL_SAFE_BRANCH}"
+fi
+iso_ref="${iso_ref}.iso"
 mv -f "$latest_iso" "$iso_ref"
 
 # Offer to boot the new build

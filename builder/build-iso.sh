@@ -73,11 +73,53 @@ cp "/tmp/$NODE_FILENAME" "$build_cache_dir/airootfs/opt/packages/"
 arch_packages=(linux-t2 git gum jq openssl plymouth tzupdate omarchy-keyring)
 printf '%s\n' "${arch_packages[@]}" >>"$build_cache_dir/packages.x86_64"
 
+# When building with a custom kernel, add the pre-built package to the offline
+# mirror and write a marker so the configurator can detect it at install time.
+if [[ -n "${USE_CUSTOM_KERNEL-}" ]]; then
+  KERNEL_PKG_FILE=$(ls /custom-kernel/linux-mainline-[0-9]*.pkg.tar.zst 2>/dev/null | head -n1)
+
+  if [[ -z "$KERNEL_PKG_FILE" ]]; then
+    echo "Error: No linux-mainline package found in /custom-kernel/"
+    exit 1
+  fi
+
+  echo "Including custom kernel in offline mirror..."
+
+  # Copy all kernel packages (kernel + headers) into the offline mirror
+  for pkg in /custom-kernel/linux-mainline*.pkg.tar.zst; do
+    [[ -f "$pkg" ]] || continue
+    cp "$pkg" "$offline_mirror_dir/"
+    echo "  Added $(basename "$pkg")"
+  done
+
+  # Write marker file so the configurator knows the custom kernel is available
+  echo "linux-mainline" > "$build_cache_dir/airootfs/root/omarchy_kernel_available"
+
+  # Create a writable copy of archinstall.packages with linux-mainline added
+  cp /builder/archinstall.packages /tmp/archinstall.packages
+  echo "linux-mainline" >> /tmp/archinstall.packages
+  echo "linux-mainline-headers" >> /tmp/archinstall.packages
+fi
+
 # Build list of all the packages needed for the offline mirror
 all_packages=($(cat "$build_cache_dir/packages.x86_64"))
 all_packages+=($(grep -v '^#' "$build_cache_dir/airootfs/root/omarchy/install/omarchy-base.packages" | grep -v '^$'))
 all_packages+=($(grep -v '^#' "$build_cache_dir/airootfs/root/omarchy/install/omarchy-other.packages" | grep -v '^$'))
-all_packages+=($(grep -v '^#' /builder/archinstall.packages | grep -v '^$'))
+ARCHINSTALL_PACKAGES="${USE_CUSTOM_KERNEL:+/tmp/archinstall.packages}"
+ARCHINSTALL_PACKAGES="${ARCHINSTALL_PACKAGES:-/builder/archinstall.packages}"
+all_packages+=($(grep -v '^#' "$ARCHINSTALL_PACKAGES" | grep -v '^$'))
+
+# Filter linux-mainline from the download list when using a custom kernel
+# (it's already in the offline mirror and not in any online repo)
+if [[ -n "${USE_CUSTOM_KERNEL-}" ]]; then
+  filtered=()
+  for pkg in "${all_packages[@]}"; do
+    if [[ $pkg != "linux-mainline" ]] && [[ $pkg != "linux-mainline-headers" ]]; then
+      filtered+=("$pkg")
+    fi
+  done
+  all_packages=("${filtered[@]}")
+fi
 
 # Download all the packages to the offline mirror inside the ISO
 mkdir -p /tmp/offlinedb
