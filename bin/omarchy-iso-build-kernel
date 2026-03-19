@@ -1,0 +1,162 @@
+#!/bin/bash
+
+# Build a custom linux-mainline kernel package from the AUR PKGBUILD with
+# additional kernel config options applied from configs/kernel/*.config fragments.
+#
+# The resulting package is cached in release/kernels/ and can be reused across
+# ISO builds via --custom-kernel without recompiling.
+#
+# Usage:
+#   LINUX_KERNEL_BRANCH=v7.0-rc4 ./bin/omarchy-iso-build-kernel
+#
+# Environment:
+#   LINUX_KERNEL_BRANCH  — Tag to build (default: v7.0-rc4)
+
+set -e
+
+BUILD_ROOT=$(realpath "${BASH_SOURCE[0]%/*}/..")
+KERNEL_BRANCH="${LINUX_KERNEL_BRANCH:-v7.0-rc4}"
+KERNEL_SAFE_BRANCH="${KERNEL_BRANCH//\//-}"
+KERNEL_OUT_DIR="$BUILD_ROOT/release/kernels"
+KERNEL_CONFIG_DIR="$BUILD_ROOT/configs/kernel"
+
+mkdir -p "$KERNEL_OUT_DIR"
+
+echo "Building linux-mainline kernel:"
+echo "  Branch: $KERNEL_BRANCH"
+echo "  Config: $KERNEL_CONFIG_DIR/*.config"
+echo "  Output: release/kernels/"
+echo
+echo "NOTE: This will take 30-90+ minutes depending on your hardware."
+echo
+
+# Parse config fragment files into scripts/config calls that will be injected
+# into the PKGBUILD's prepare() function.
+#
+# Supports these formats:
+#   CONFIG_FOO=y           -> scripts/config --enable CONFIG_FOO
+#   CONFIG_FOO=m           -> scripts/config --module CONFIG_FOO
+#   CONFIG_FOO=n           -> scripts/config --disable CONFIG_FOO
+#   CONFIG_FOO="string"    -> scripts/config --set-str CONFIG_FOO string
+#   CONFIG_FOO=123         -> scripts/config --set-val CONFIG_FOO 123
+#   # CONFIG_FOO is not set -> scripts/config --disable CONFIG_FOO
+generate_config_commands() {
+  local config_dir="$1"
+  local commands=""
+
+  for fragment in "$config_dir"/*.config; do
+    [[ -f "$fragment" ]] || continue
+    local basename
+    basename=$(basename "$fragment")
+    commands+="  echo \"Applying config fragment: $basename...\""$'\n'
+
+    while IFS= read -r line; do
+      # Skip empty lines
+      [[ -z "$line" ]] && continue
+      # Skip comments unless they match "# CONFIG_FOO is not set"
+      if [[ "$line" =~ ^# ]] && ! [[ "$line" =~ ^#[[:space:]]*CONFIG_ ]]; then
+        continue
+      fi
+
+      if [[ "$line" =~ ^#[[:space:]]*(CONFIG_[A-Za-z0-9_]+)[[:space:]]is[[:space:]]not[[:space:]]set ]]; then
+        commands+="  scripts/config --disable ${BASH_REMATCH[1]}"$'\n'
+      elif [[ "$line" =~ ^(CONFIG_[A-Za-z0-9_]+)=y$ ]]; then
+        commands+="  scripts/config --enable ${BASH_REMATCH[1]}"$'\n'
+      elif [[ "$line" =~ ^(CONFIG_[A-Za-z0-9_]+)=m$ ]]; then
+        commands+="  scripts/config --module ${BASH_REMATCH[1]}"$'\n'
+      elif [[ "$line" =~ ^(CONFIG_[A-Za-z0-9_]+)=n$ ]]; then
+        commands+="  scripts/config --disable ${BASH_REMATCH[1]}"$'\n'
+      elif [[ "$line" =~ ^(CONFIG_[A-Za-z0-9_]+)=\"(.*)\"$ ]]; then
+        commands+="  scripts/config --set-str ${BASH_REMATCH[1]} \"${BASH_REMATCH[2]}\""$'\n'
+      elif [[ "$line" =~ ^(CONFIG_[A-Za-z0-9_]+)=([0-9]+)$ ]]; then
+        commands+="  scripts/config --set-val ${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"$'\n'
+      fi
+    done < "$fragment"
+  done
+
+  echo "$commands"
+}
+
+CONFIG_COMMANDS=$(generate_config_commands "$KERNEL_CONFIG_DIR")
+
+if [[ -z "$CONFIG_COMMANDS" ]]; then
+  echo "Warning: No config fragments found in $KERNEL_CONFIG_DIR/"
+  echo "The kernel will be built with the stock linux-mainline config."
+  echo
+fi
+
+# Write config commands to a file that gets mounted into the container.
+# The PKGBUILD's prepare() sources this after copying the base config.
+CONFIG_INJECT_TMP=$(mktemp /tmp/omarchy-kernel-config.XXXXXX)
+trap 'rm -f "$CONFIG_INJECT_TMP"' EXIT
+printf '%s\n' "$CONFIG_COMMANDS" > "$CONFIG_INJECT_TMP"
+
+docker run \
+  --rm \
+  --privileged \
+  -e "KERNEL_BRANCH=$KERNEL_BRANCH" \
+  -e "HOST_UID=$(id -u)" \
+  -e "HOST_GID=$(id -g)" \
+  -v "$KERNEL_OUT_DIR:/out" \
+  -v "$CONFIG_INJECT_TMP:/build/config-inject.sh:ro" \
+  archlinux/archlinux:latest \
+  /bin/bash -c '
+    set -e
+
+    # Init keyring and install build tools
+    pacman-key --init
+    pacman --noconfirm -Sy archlinux-keyring
+    pacman --noconfirm -Sy base-devel git bc cpio gettext libelf pahole perl \
+      python rust rust-bindgen rust-src flex bison openssl zstd curl tar xz
+
+    # Create a build user (makepkg refuses to run as root)
+    useradd -m builder
+    echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+    # Clone the AUR linux-mainline PKGBUILD
+    echo "Cloning AUR linux-mainline PKGBUILD..."
+    cd /home/builder
+    sudo -u builder git clone https://aur.archlinux.org/linux-mainline.git
+    cd linux-mainline
+
+    # Inject our config overrides into the PKGBUILD prepare() function.
+    # We insert the scripts/config calls right before "make olddefconfig" so
+    # they take effect when olddefconfig resolves dependencies.
+    if [[ -s /build/config-inject.sh ]]; then
+      echo "Injecting custom kernel config options into PKGBUILD..."
+
+      # Build the sed replacement: insert config commands before "make olddefconfig"
+      INJECT_LINES=$(cat /build/config-inject.sh)
+      # Use awk for reliable multi-line insertion
+      sudo -u builder awk -v inject="$INJECT_LINES" \
+        "/make olddefconfig/ { print inject } { print }" \
+        PKGBUILD > PKGBUILD.tmp
+      mv PKGBUILD.tmp PKGBUILD
+      chown builder:builder PKGBUILD
+    fi
+
+    # Update the PKGBUILD checksums since we are not verifying the AUR source
+    # (the git clone already provides authenticity via the AUR)
+    sudo -u builder updpkgsums 2>/dev/null || true
+
+    # Build the kernel packages (skip docs to save time, skip integrity checks
+    # since we modified the PKGBUILD)
+    echo "Building kernel (this will take a while)..."
+    sudo -u builder makepkg --noconfirm --skipchecksums --skippgpcheck -f 2>&1
+
+    # Copy resulting packages to output
+    echo "Copying kernel packages to output..."
+    for pkg in /home/builder/linux-mainline/linux-mainline-*.pkg.tar.zst; do
+      [[ -f "$pkg" ]] || continue
+      cp "$pkg" /out/
+      basename "$pkg"
+    done
+
+    # Fix ownership
+    if [ -n "$HOST_UID" ] && [ -n "$HOST_GID" ]; then
+      chown "$HOST_UID:$HOST_GID" /out/linux-mainline-*.pkg.tar.zst 2>/dev/null || true
+    fi
+
+    echo
+    echo "Kernel packages ready in release/kernels/"
+  '

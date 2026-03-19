@@ -1,0 +1,28 @@
+# Omarchy ISO — environment variable overrides
+# Copy this file to .envrc and uncomment/edit the vars you want to override.
+# direnv (https://direnv.net) will load .envrc automatically when you cd into
+# this directory. Alternatively, source it manually: source .envrc
+
+# ---------------------------------------------------------------------------
+# Omarchy installer
+# ---------------------------------------------------------------------------
+
+# GitHub repository for the Omarchy installer (user/repo format)
+#export OMARCHY_INSTALLER_REPO=basecamp/omarchy
+
+# Git branch or tag for the Omarchy installer
+#export OMARCHY_INSTALLER_REF=master
+
+# Mirror tier used during the ISO build and at install time: stable | edge | rc
+#export OMARCHY_MIRROR=stable
+
+# Local path to an Omarchy checkout. Only used when passing --local-source to
+# omarchy-iso-make. Allows testing local changes without pushing to GitHub.
+#export OMARCHY_PATH=/path/to/your/omarchy
+
+# ---------------------------------------------------------------------------
+# Custom Linux kernel (used with --build-kernel or --custom-kernel)
+# ---------------------------------------------------------------------------
+
+# Branch or tag of the AUR linux-mainline package to build (e.g. v7.0-rc4)
+#export LINUX_KERNEL_BRANCH=v7.0-rc4

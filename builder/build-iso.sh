@@ -71,13 +71,81 @@ cp "/tmp/$NODE_FILENAME" "$build_cache_dir/airootfs/opt/packages/"
 
 # Add our additional packages to packages.x86_64
 arch_packages=(linux-t2 git gum jq openssl plymouth tzupdate omarchy-keyring)
+
+# When building with a custom kernel, swap linux-t2 for linux-mainline and patch all
+# bootloader/initramfs configs to reference the new kernel image names.
+if [[ -n "${USE_CUSTOM_KERNEL-}" ]]; then
+  KERNEL_PKG_FILE=$(ls /custom-kernel/linux-mainline-[0-9]*.pkg.tar.zst 2>/dev/null | head -n1)
+
+  if [[ -z "$KERNEL_PKG_FILE" ]]; then
+    echo "Error: No linux-mainline package found in /custom-kernel/"
+    exit 1
+  fi
+
+  # Pre-populate the package into pacman's cache so mkarchiso finds it locally
+  mkdir -p /var/cache/pacman/pkg
+  cp "$KERNEL_PKG_FILE" /var/cache/pacman/pkg/
+  # Also keep a copy in the offline mirror so it's available in the live ISO
+  cp "$KERNEL_PKG_FILE" "$offline_mirror_dir/"
+
+  # Replace linux-t2 with linux-mainline in the package list
+  arch_packages=("${arch_packages[@]/linux-t2/linux-mainline}")
+
+  # Patch bootloader configs: swap all linux-t2 image references to linux-mainline
+  for cfg_file in \
+    "$build_cache_dir/grub/grub.cfg" \
+    "$build_cache_dir/grub/loopback.cfg" \
+    "$build_cache_dir/efiboot/loader/entries/01-archiso-x86_64-linux.conf" \
+    "$build_cache_dir/syslinux/archiso_sys-linux.cfg" \
+    "$build_cache_dir/syslinux/archiso_pxe-linux.cfg"; do
+    if [[ -f "$cfg_file" ]]; then
+      sed -i \
+        's/vmlinuz-linux-t2/vmlinuz-linux-mainline/g;
+         s/initramfs-linux-t2\.img/initramfs-linux-mainline.img/g' \
+        "$cfg_file"
+    fi
+  done
+
+  # Patch mkinitcpio preset so archiso generates the right initramfs
+  sed -i \
+    "s|ALL_kver='/boot/vmlinuz-linux-t2'|ALL_kver='/boot/vmlinuz-linux-mainline'|;
+     s|archiso_image=\"/boot/initramfs-linux-t2\.img\"|archiso_image=\"/boot/initramfs-linux-mainline.img\"|" \
+    "$build_cache_dir/airootfs/etc/mkinitcpio.d/linux.preset"
+
+  # Bake a marker file so the live ISO knows to install linux-mainline at install time
+  echo "linux-mainline" > "$build_cache_dir/airootfs/root/omarchy_kernel"
+
+  # Swap linux for linux-mainline in the offline package list used by archinstall
+  # so the installed system gets our kernel rather than the vanilla pacman linux.
+  # /builder is mounted read-only so we work on a writable copy.
+  cp /builder/archinstall.packages /tmp/archinstall.packages
+  sed -i 's/^linux$/linux-mainline/' /tmp/archinstall.packages
+
+# When --no-t2 is passed without a custom kernel, simply drop linux-t2 from the build.
+elif [[ -n "${OMARCHY_NO_T2-}" ]]; then
+  arch_packages=("${arch_packages[@]/linux-t2}")
+fi
+
 printf '%s\n' "${arch_packages[@]}" >>"$build_cache_dir/packages.x86_64"
 
 # Build list of all the packages needed for the offline mirror
 all_packages=($(cat "$build_cache_dir/packages.x86_64"))
 all_packages+=($(grep -v '^#' "$build_cache_dir/airootfs/root/omarchy/install/omarchy-base.packages" | grep -v '^$'))
 all_packages+=($(grep -v '^#' "$build_cache_dir/airootfs/root/omarchy/install/omarchy-other.packages" | grep -v '^$'))
-all_packages+=($(grep -v '^#' /builder/archinstall.packages | grep -v '^$'))
+ARCHINSTALL_PACKAGES="${USE_CUSTOM_KERNEL:+/tmp/archinstall.packages}"
+ARCHINSTALL_PACKAGES="${ARCHINSTALL_PACKAGES:-/builder/archinstall.packages}"
+all_packages+=($(grep -v '^#' "$ARCHINSTALL_PACKAGES" | grep -v '^$'))
+
+# When using a custom kernel the package is already in the offline mirror (copied
+# above); remove it from the download list so pacman doesn't try to fetch it from
+# online repos where it doesn't exist.
+if [[ -n "${USE_CUSTOM_KERNEL-}" ]]; then
+  filtered=()
+  for pkg in "${all_packages[@]}"; do
+    [[ "$pkg" != "linux-mainline" ]] && filtered+=("$pkg")
+  done
+  all_packages=("${filtered[@]}")
+fi
 
 # Download all the packages to the offline mirror inside the ISO
 mkdir -p /tmp/offlinedb
