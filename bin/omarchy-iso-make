@@ -5,6 +5,8 @@ set -e
 
 # Parse command line arguments
 NO_CACHE=""
+GB10=""
+PACKAGE_DIR=""
 while [[ $# -gt 0 ]]; do
   case $1 in
   --no-cache)
@@ -35,16 +37,106 @@ while [[ $# -gt 0 ]]; do
     OMARCHY_INSTALLER_REF=rc
     shift
     ;;
+  --gb10)
+    GB10=1
+    shift
+    ;;
+  --package-dir)
+    if [[ $# -lt 2 || -z $2 ]]; then
+      echo "ERROR: --package-dir requires a directory" >&2
+      exit 1
+    fi
+    PACKAGE_DIR=$2
+    shift 2
+    ;;
   *)
     echo "Unknown option: $1"
-    echo "Usage: $0 [--no-cache] [--no-boot-offer] [--local-source] [--dev] [--quattro] [--rc]"
+    echo "Usage: $0 [--no-cache] [--no-boot-offer] [--local-source] [--dev] [--quattro] [--rc] [--gb10 --package-dir DIR]"
     exit 1
     ;;
   esac
 done
 
-# Clear out old packages
-sudo rm -rf /var/cache/pacman/pkg/*
+OMARCHY_ARCH=x86_64
+OMARCHY_KERNEL=linux-t2
+CONTAINER_IMAGE=archlinux/archlinux:latest
+CONTAINER_PLATFORM_ARGS=()
+
+if [[ -n $GB10 ]]; then
+  if [[ ${OMARCHY_INSTALLER_REF:-} == quattro ]]; then
+    echo "ERROR: --gb10 is only supported by the main-compatible installer flow, not --quattro" >&2
+    exit 1
+  fi
+
+  OMARCHY_ARCH=aarch64
+  OMARCHY_KERNEL=linux-gb10
+  # Pin the reviewed ARM64 manifest because this container runs with the
+  # privileges archiso needs; a mutable third-party tag is not acceptable.
+  CONTAINER_IMAGE=menci/archlinuxarm@sha256:3e1074c407fc1a57c2a2117af6920c96a7cc906fa6f1f2da8a4a7fd3aa2c2f4e
+  CONTAINER_PLATFORM_ARGS=(--platform linux/arm64)
+
+  if [[ -z $PACKAGE_DIR ]]; then
+    echo "ERROR: --gb10 requires --package-dir DIR" >&2
+    exit 1
+  fi
+  if [[ ! -d $PACKAGE_DIR ]]; then
+    echo "ERROR: GB10 package directory does not exist: $PACKAGE_DIR" >&2
+    exit 1
+  fi
+
+  PACKAGE_DIR=$(realpath "$PACKAGE_DIR")
+  mapfile -t runtime_archives < <(find "$PACKAGE_DIR" -maxdepth 1 -type f \
+    \( -name 'linux-gb10-[0-9]*-aarch64.pkg.tar.xz' -o -name 'linux-gb10-[0-9]*-aarch64.pkg.tar.zst' \) -print)
+  mapfile -t headers_archives < <(find "$PACKAGE_DIR" -maxdepth 1 -type f \
+    \( -name 'linux-gb10-headers-[0-9]*-aarch64.pkg.tar.xz' -o -name 'linux-gb10-headers-[0-9]*-aarch64.pkg.tar.zst' \) -print)
+
+  if (( ${#runtime_archives[@]} != 1 )); then
+    echo "ERROR: expected exactly one linux-gb10 runtime archive in $PACKAGE_DIR; found ${#runtime_archives[@]}" >&2
+    exit 1
+  fi
+  if (( ${#headers_archives[@]} != 1 )); then
+    echo "ERROR: expected exactly one linux-gb10-headers archive in $PACKAGE_DIR; found ${#headers_archives[@]}" >&2
+    exit 1
+  fi
+
+  checksum_manifest="$PACKAGE_DIR/SHA256SUMS"
+  if [[ ! -f $checksum_manifest ]]; then
+    echo "ERROR: GB10 package directory must contain SHA256SUMS" >&2
+    exit 1
+  fi
+  while IFS= read -r package_archive; do
+    archive_name=${package_archive##*/}
+    if ! awk -v name="$archive_name" '{ file=$2; sub(/^\*/, "", file); if (file == name) found=1 } END { exit !found }' "$checksum_manifest"; then
+      echo "ERROR: SHA256SUMS does not cover $archive_name" >&2
+      exit 1
+    fi
+  done < <(find "$PACKAGE_DIR" -maxdepth 1 -type f \
+    \( -name '*.pkg.tar.xz' -o -name '*.pkg.tar.zst' \) -print)
+  if ! (cd "$PACKAGE_DIR" && sha256sum --check --strict SHA256SUMS); then
+    echo "ERROR: GB10 package checksum verification failed" >&2
+    exit 1
+  fi
+
+  if [[ -n ${LOCAL_SOURCE:-} ]]; then
+    if [[ -z ${OMARCHY_PATH:-} || ! -d $OMARCHY_PATH ]]; then
+      echo "ERROR: GB10 --local-source requires OMARCHY_PATH to name an Omarchy checkout" >&2
+      exit 1
+    fi
+  elif [[ -z ${OMARCHY_INSTALLER_REPO:-} || -z ${OMARCHY_INSTALLER_REF:-} || ${OMARCHY_INSTALLER_REF:-} =~ ^(master|dev|rc)$ ]]; then
+    echo "ERROR: GB10 requires --local-source or explicit OMARCHY_INSTALLER_REPO and GB10 branch OMARCHY_INSTALLER_REF" >&2
+    exit 1
+  fi
+elif [[ -n $PACKAGE_DIR ]]; then
+  echo "ERROR: --package-dir is only valid with --gb10" >&2
+  exit 1
+fi
+
+# The x86 builder preserves its historical host package-cache behavior. GB10
+# builds are hermetic: the host cache and persistent offline mirror are never
+# mounted, so stale or foreign-architecture packages cannot leak into the ISO.
+if [[ -z $GB10 ]]; then
+  sudo rm -rf /var/cache/pacman/pkg/*
+fi
 
 # Ensure we have the submodule checked out
 git submodule update --init --recursive --jobs=8
@@ -52,8 +144,14 @@ git submodule update --init --recursive --jobs=8
 # Prepare build repo
 BUILD_SCRIPT="builder/build-iso.sh"
 BUILD_ROOT=$(realpath "${BASH_SOURCE[0]%/*}/..")
-BUILD_RELEASE_PATH="$BUILD_ROOT/release"
-mkdir -p "$BUILD_RELEASE_PATH"
+source "$BUILD_ROOT/builder/publish-iso.sh"
+BUILD_RELEASE_ROOT="$BUILD_ROOT/release"
+mkdir -p "$BUILD_RELEASE_ROOT"
+if [[ -n $GB10 ]]; then
+  BUILD_OUTPUT_PATH=$(mktemp -d "$BUILD_RELEASE_ROOT/.gb10-build.XXXXXX")
+else
+  BUILD_OUTPUT_PATH=$BUILD_RELEASE_ROOT
+fi
 
 OMARCHY_INSTALLER_REPO="${OMARCHY_INSTALLER_REPO:-basecamp/omarchy}"
 OMARCHY_INSTALLER_REF="${OMARCHY_INSTALLER_REF:-master}"
@@ -65,14 +163,23 @@ DOCKER_ARGS=(
   -e "OMARCHY_INSTALLER_REPO=$OMARCHY_INSTALLER_REPO"
   -e "OMARCHY_INSTALLER_REF=$OMARCHY_INSTALLER_REF"
   -e "OMARCHY_MIRROR=$OMARCHY_MIRROR"
+  -e "OMARCHY_ARCH=$OMARCHY_ARCH"
+  -e "OMARCHY_KERNEL=$OMARCHY_KERNEL"
   -e "HOST_UID=$(id -u)"
   -e "HOST_GID=$(id -g)"
-  -v "$BUILD_RELEASE_PATH/:/out/"
+  -v "$BUILD_OUTPUT_PATH/:/out/"
   -v "$BUILD_ROOT/$BUILD_SCRIPT:/$BUILD_SCRIPT:ro"
   -v "$BUILD_ROOT/archiso:/archiso:ro"
   -v "$BUILD_ROOT/builder:/builder:ro"
   -v "$BUILD_ROOT/configs:/configs:ro"
 )
+
+if [[ -n $GB10 ]]; then
+  DOCKER_ARGS+=(
+    -e "OMARCHY_PACKAGE_DIR=/packages"
+    -v "$PACKAGE_DIR:/packages:ro"
+  )
+fi
 
 # Use local source of Omarchy from $OMARCHY_PATH instead of git checkout
 if [[ -n "${LOCAL_SOURCE-}" ]]; then
@@ -80,13 +187,13 @@ if [[ -n "${LOCAL_SOURCE-}" ]]; then
 fi
 
 # Use local pacman cache if you already have one on host to speed up repeat runs
-if [ -d "/var/cache/pacman/pkg" ]; then
+if [[ -z $GB10 && -d /var/cache/pacman/pkg ]]; then
   DOCKER_ARGS+=(-v "/var/cache/pacman/pkg:/var/cache/pacman/pkg")
 fi
 
 # Mount the build cache directory where packages are downloaded. Channels use
 # different package snapshots and must never share an offline mirror cache.
-if [[ -z "$NO_CACHE" ]]; then
+if [[ -z $GB10 && -z $NO_CACHE ]]; then
   OFFLINE_REPO_BUILD_CACHE_DIR="$HOME/.cache/omarchy/iso_${OMARCHY_MIRROR}/airootfs/var/cache/omarchy"
   mkdir -p "$OFFLINE_REPO_BUILD_CACHE_DIR"
   # Mount to /var/cache/airootfs/var/cache/omarchy since that's where repo packages go in the ISO
@@ -94,15 +201,25 @@ if [[ -z "$NO_CACHE" ]]; then
 fi
 
 # Run the builder with assembled args
-docker run "${DOCKER_ARGS[@]}" archlinux/archlinux:latest /$BUILD_SCRIPT
+docker run "${CONTAINER_PLATFORM_ARGS[@]}" "${DOCKER_ARGS[@]}" "$CONTAINER_IMAGE" /$BUILD_SCRIPT
 
 # Move as install ref
-latest_iso=$(\ls -t "$BUILD_RELEASE_PATH"/*.iso | head -n1)
-iso_ref="${latest_iso%.*}-$OMARCHY_INSTALLER_REF.iso"
-mv -f "$latest_iso" "$iso_ref"
+latest_iso=$(\ls -t "$BUILD_OUTPUT_PATH"/*.iso | head -n1)
+if [[ -n $GB10 ]]; then
+  iso_basename=${latest_iso##*/}
+  iso_ref="$BUILD_RELEASE_ROOT/${iso_basename%.*}-gb10-$OMARCHY_INSTALLER_REF.iso"
+  publish_iso_no_replace "$latest_iso" "$iso_ref"
+  rmdir "$BUILD_OUTPUT_PATH"
+else
+  iso_ref="${latest_iso%.*}-$OMARCHY_INSTALLER_REF.iso"
+  mv -f "$latest_iso" "$iso_ref"
+fi
 
 # Offer to boot the new build
-if [[ -z "$NO_BOOT_OFFER" ]]; then
+if [[ -n $GB10 && -z $NO_BOOT_OFFER ]]; then
+  echo
+  echo "GB10 ISO built at $iso_ref (automatic boot skipped; omarchy-iso-boot is x86_64-only)"
+elif [[ -z "$NO_BOOT_OFFER" ]]; then
   echo
   gum confirm "Boot $iso_ref?" && omarchy-iso-boot "$iso_ref"
 fi

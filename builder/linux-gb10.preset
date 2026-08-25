@@ -1,0 +1,8 @@
+# mkinitcpio preset for the GB10 live kernel.
+
+PRESETS=('archiso')
+
+ALL_kver='/boot/vmlinuz-linux-gb10'
+archiso_config='/etc/mkinitcpio.conf.d/archiso.conf'
+
+archiso_image='/boot/initramfs-linux-gb10.img'

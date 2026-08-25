@@ -8,11 +8,19 @@ iso_application="Omarchy Installer"
 iso_version="$(date --date="@${SOURCE_DATE_EPOCH:-$(date +%s)}" +%Y.%m.%d)"
 install_dir="arch"
 buildmodes=('iso')
-bootmodes=('bios.syslinux' 'uefi.grub')
-arch="x86_64"
+arch="${OMARCHY_ARCH:-x86_64}"
+if [[ $arch == aarch64 ]]; then
+  bootmodes=('uefi.grub')
+else
+  bootmodes=('bios.syslinux' 'uefi.grub')
+fi
 pacman_conf="pacman-offline.conf"
 airootfs_image_type="squashfs"
-airootfs_image_tool_options=('-comp' 'xz' '-Xbcj' 'x86' '-b' '1M' '-Xdict-size' '1M')
+if [[ $arch == aarch64 ]]; then
+  airootfs_image_tool_options=('-comp' 'xz' '-b' '1M' '-Xdict-size' '1M')
+else
+  airootfs_image_tool_options=('-comp' 'xz' '-Xbcj' 'x86' '-b' '1M' '-Xdict-size' '1M')
+fi
 bootstrap_tarball_compression=('zstd' '-c' '-T0' '--auto-threads=logical' '--long' '-19')
 file_permissions=(
   ["/etc/shadow"]="0:0:400"

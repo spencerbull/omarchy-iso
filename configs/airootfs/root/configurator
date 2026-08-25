@@ -2,9 +2,7 @@
 
 # Rely on Omarchy for styling and error handling
 source "$OMARCHY_INSTALL/helpers/all.sh"
-
-# Ensure tzupdate is available for guessing timezone
-command -v tzupdate >/dev/null || sudo pacman -Sy --noconfirm tzupdate
+source /usr/local/lib/omarchy-iso/platform.sh
 
 abort() {
   gum style "${1:-Aborted installation}"
@@ -12,6 +10,17 @@ abort() {
   gum style "You can retry later by running: ./.automated_script.sh"
   exit 1
 }
+
+machine_arch=$(uname -m)
+if [[ $machine_arch == aarch64 ]] && ! omarchy_is_gb10 /sys; then
+  abort "This AArch64 installer only supports NVIDIA GB10 systems"
+fi
+
+# tzupdate has no AArch64 package. GB10 uses the normal timezone picker when
+# geolocation is unavailable; x86_64 retains the existing automatic guess.
+if [[ $machine_arch != aarch64 ]]; then
+  command -v tzupdate >/dev/null || sudo pacman -Sy --noconfirm tzupdate
+fi
 
 step() {
   clear_logo
@@ -141,7 +150,11 @@ user_form() {
   done
 
   # Pick timezone
-  geo_guessed_timezone=$(tzupdate -p 2>/dev/null)
+  if command -v tzupdate >/dev/null; then
+    geo_guessed_timezone=$(tzupdate -p 2>/dev/null)
+  else
+    geo_guessed_timezone=UTC
+  fi
 
   if [[ -n $geo_guessed_timezone ]]; then
     timezone=$(timedatectl list-timezones | gum choose --height 10 --selected "$geo_guessed_timezone" --header "Timezone") || abort
@@ -357,11 +370,24 @@ boot_partition_size=$((2 * gib))
 main_partition_start=$((boot_partition_size + boot_partition_start))
 main_partition_size=$((disk_size_in_mib - main_partition_start - gpt_backup_reserve))
 
-# Detect T2 Mac and set appropriate kernel
-if lspci -nn 2>/dev/null | grep -q "106b:180[12]"; then
+# Select the qualified GB10 kernel only after the exact platform guard above.
+if [[ $machine_arch == aarch64 ]]; then
+  kernel_choice="linux-gb10"
+  archinstall_custom_servers='            {"url": "http://mirror.archlinuxarm.org/aarch64/$repo"}'
+  archinstall_extra_packages='        "archlinuxarm-keyring",
+        "linux-gb10-headers",'
+elif lspci -nn 2>/dev/null | grep -q "106b:180[12]"; then
   kernel_choice="linux-t2"
+  archinstall_custom_servers='            {"url": "https://mirror.omarchy.org/$repo/os/$arch"},
+            {"url": "https://mirror.rackspace.com/archlinux/$repo/os/$arch"},
+            {"url": "https://geo.mirror.pkgbuild.com/$repo/os/$arch"}'
+  archinstall_extra_packages=""
 else
   kernel_choice="linux"
+  archinstall_custom_servers='            {"url": "https://mirror.omarchy.org/$repo/os/$arch"},
+            {"url": "https://mirror.rackspace.com/archlinux/$repo/os/$arch"},
+            {"url": "https://geo.mirror.pkgbuild.com/$repo/os/$arch"}'
+  archinstall_extra_packages=""
 fi
 
 if [[ $encrypt_installation == true ]]; then
@@ -468,14 +494,13 @@ cat <<-_EOF_ >user_configuration.json
     "mirror_config": {
         "custom_repositories": [],
         "custom_servers": [
-            {"url": "https://mirror.omarchy.org/\$repo/os/\$arch"},
-            {"url": "https://mirror.rackspace.com/archlinux/\$repo/os/\$arch"},
-            {"url": "https://geo.mirror.pkgbuild.com/\$repo/os/\$arch"}
+$archinstall_custom_servers
         ],
         "mirror_regions": {},
         "optional_repositories": []
     },
     "packages": [
+$archinstall_extra_packages
         "base-devel",
         "git",
         "omarchy-keyring",
