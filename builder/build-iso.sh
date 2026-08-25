@@ -370,7 +370,7 @@ if [[ $OMARCHY_ARCH == aarch64 ]]; then
     nvidia-open-dkms=610.57.04-1
     nvidia-utils=610.57.04-1
     libva-nvidia-driver
-    limine-mkinitcpio-hook=1.37.1-3
+    limine-mkinitcpio-hook=1.37.1-4
     limine-snapper-sync=1.31.0-1
   )
 else
@@ -454,8 +454,8 @@ if [[ $OMARCHY_ARCH == aarch64 ]]; then
         ;;
       limine-mkinitcpio-hook)
         ((limine_hook_count += 1))
-        if [[ $package_version != 1.37.1-3 ]]; then
-          echo "ERROR: GB10 requires limine-mkinitcpio-hook 1.37.1-3, found $package_version" >&2
+        if [[ $package_version != 1.37.1-4 ]]; then
+          echo "ERROR: GB10 requires limine-mkinitcpio-hook 1.37.1-4, found $package_version" >&2
           exit 1
         fi
         common_functions=usr/lib/limine/limine-common-functions
