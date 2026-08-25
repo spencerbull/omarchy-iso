@@ -51,6 +51,16 @@ grub_modules=(all_video at_keyboard boot keylayouts linux usb usbserial_common u
 filter_archiso_aarch64_grub_modules grub_modules
 [[ ${grub_modules[*]} == 'all_video boot linux video' ]]
 
+source "$repo_root/builder/archiso-aarch64-mkinitcpio.sh"
+printf '%s\n' 'HOOKS=(base udev microcode modconf kms memdisk archiso filesystems keyboard)' >"$fixture/archiso.conf"
+configure_archiso_aarch64_mkinitcpio "$fixture/archiso.conf"
+[[ $(<"$fixture/archiso.conf") == 'HOOKS=(base udev modconf kms archiso filesystems keyboard)' ]]
+printf '%s\n' 'HOOKS=(base udev modconf kms archiso filesystems keyboard)' >"$fixture/unexpected-archiso.conf"
+if configure_archiso_aarch64_mkinitcpio "$fixture/unexpected-archiso.conf" >/dev/null 2>&1; then
+  echo "AArch64 mkinitcpio overlay unexpectedly accepted a drifted hook layout" >&2
+  exit 1
+fi
+
 source "$repo_root/builder/arm64-kernel-image.sh"
 truncate -s 64 "$fixture/raw-arm64-image" "$fixture/efi-stub-arm64-image" "$fixture/invalid-efi-image"
 printf 'ARMd' | dd of="$fixture/raw-arm64-image" bs=1 seek=56 conv=notrunc status=none

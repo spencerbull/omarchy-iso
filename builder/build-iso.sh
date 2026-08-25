@@ -6,6 +6,7 @@ source /builder/node-release.sh
 source /builder/arm64-kernel-image.sh
 source /builder/limine-hook.sh
 source /builder/gb10-omarchy-source.sh
+source /builder/archiso-aarch64-mkinitcpio.sh
 
 OMARCHY_ARCH=${OMARCHY_ARCH:-x86_64}
 OMARCHY_KERNEL=${OMARCHY_KERNEL:-linux-t2}
@@ -257,7 +258,8 @@ if [[ $OMARCHY_ARCH == aarch64 ]]; then
 
   rm "$build_cache_dir/airootfs/etc/mkinitcpio.d/linux.preset"
   cp /builder/linux-gb10.preset "$build_cache_dir/airootfs/etc/mkinitcpio.d/linux-gb10.preset"
-  sed -i 's/ udev microcode / udev /' "$build_cache_dir/airootfs/etc/mkinitcpio.conf.d/archiso.conf"
+  configure_archiso_aarch64_mkinitcpio \
+    "$build_cache_dir/airootfs/etc/mkinitcpio.conf.d/archiso.conf"
   kernel_options=""
 else
   kernel_options="xe.enable_panel_replay=0"
