@@ -11,6 +11,8 @@ raw_arm64_image_prefix() {
 is_raw_arm64_kernel_image() {
   local image=$1
 
-  [[ $(raw_arm64_image_magic "$image") == 41524d64 ]] &&
-    [[ $(raw_arm64_image_prefix "$image") != 4d5a ]]
+  # An uncompressed arm64 Image always carries the little-endian ARMd magic
+  # at offset 56. With CONFIG_EFI_STUB it also legitimately starts with MZ,
+  # because the same Image masquerades as a PE/COFF executable.
+  [[ $(raw_arm64_image_magic "$image") == 41524d64 ]]
 }

@@ -47,13 +47,15 @@ if limine_function_uses_supported_arch enroll_config <<<"$missing_enroll_support
 fi
 
 source "$repo_root/builder/arm64-kernel-image.sh"
-truncate -s 64 "$fixture/raw-arm64-image" "$fixture/efi-zboot-image"
+truncate -s 64 "$fixture/raw-arm64-image" "$fixture/efi-stub-arm64-image" "$fixture/invalid-efi-image"
 printf 'ARMd' | dd of="$fixture/raw-arm64-image" bs=1 seek=56 conv=notrunc status=none
-printf 'MZ' | dd of="$fixture/efi-zboot-image" bs=1 conv=notrunc status=none
-printf 'ARMd' | dd of="$fixture/efi-zboot-image" bs=1 seek=56 conv=notrunc status=none
+printf 'MZ' | dd of="$fixture/efi-stub-arm64-image" bs=1 conv=notrunc status=none
+printf 'ARMd' | dd of="$fixture/efi-stub-arm64-image" bs=1 seek=56 conv=notrunc status=none
+printf 'MZ' | dd of="$fixture/invalid-efi-image" bs=1 conv=notrunc status=none
 is_raw_arm64_kernel_image "$fixture/raw-arm64-image"
-if is_raw_arm64_kernel_image "$fixture/efi-zboot-image"; then
-  echo "raw ARM64 image validation unexpectedly accepted EFI-zboot" >&2
+is_raw_arm64_kernel_image "$fixture/efi-stub-arm64-image"
+if is_raw_arm64_kernel_image "$fixture/invalid-efi-image"; then
+  echo "raw ARM64 image validation unexpectedly accepted an image without ARMd magic" >&2
   exit 1
 fi
 
