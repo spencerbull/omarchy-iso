@@ -45,7 +45,14 @@ if [[ $OMARCHY_ARCH == aarch64 ]]; then
     mtools \
     squashfs-tools \
     git sudo base-devel jq grub
-  mkarchiso_command=/archiso/archiso/mkarchiso
+  # Archiso v87's common GRUB module list contains legacy x86/USB modules that
+  # the arm64-efi GRUB target does not provide. Patch only the temporary copy;
+  # the pinned submodule remains immutable and patch drift fails the build.
+  mkarchiso_command=/tmp/mkarchiso-aarch64
+  cp /archiso/archiso/mkarchiso "$mkarchiso_command"
+  patch --batch --forward "$mkarchiso_command" \
+    </builder/archiso-v87-aarch64-grub.patch
+  chmod 0755 "$mkarchiso_command"
 else
   pacman --noconfirm -Sy archlinux-keyring
   pacman-key --populate archlinux

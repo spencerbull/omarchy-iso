@@ -1,0 +1,13 @@
+--- mkarchiso
++++ mkarchiso
+@@ -689,6 +689,10 @@ _make_bootmode_uefi.grub() {
+                  minicmd normal ntfs ntfscomp part_apple part_gpt part_msdos png read reboot regexp search \
+                  search_fs_file search_fs_uuid search_label serial sleep tpm udf usb usbserial_common usbserial_ftdi \
+                  usbserial_pl2303 usbserial_usbdebug video xfs zstd)
++    if [[ "$arch" == 'aarch64' ]]; then
++        source /builder/archiso-aarch64-grub-modules.sh
++        filter_archiso_aarch64_grub_modules grubmodules
++    fi
+     grub-mkstandalone -O "$grub_target" \
+         --modules="${grubmodules[*]}" \
+         --locales="en@quot" \

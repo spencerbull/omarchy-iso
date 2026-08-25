@@ -46,6 +46,11 @@ if limine_function_uses_supported_arch enroll_config <<<"$missing_enroll_support
   exit 1
 fi
 
+source "$repo_root/builder/archiso-aarch64-grub-modules.sh"
+grub_modules=(all_video at_keyboard boot keylayouts linux usb usbserial_common usbserial_ftdi usbserial_pl2303 usbserial_usbdebug video)
+filter_archiso_aarch64_grub_modules grub_modules
+[[ ${grub_modules[*]} == 'all_video boot linux video' ]]
+
 source "$repo_root/builder/arm64-kernel-image.sh"
 truncate -s 64 "$fixture/raw-arm64-image" "$fixture/efi-stub-arm64-image" "$fixture/invalid-efi-image"
 printf 'ARMd' | dd of="$fixture/raw-arm64-image" bs=1 seek=56 conv=notrunc status=none
@@ -186,8 +191,14 @@ grep -Fq 'nvidia-utils=610.57.04-1' "$source_contract"
 grep -Fq 'usr/lib/firmware/nvidia/610.57.04/gsp_ga10x.bin' "$repo_root/builder/build-iso.sh"
 grep -Fq 'usr/lib/firmware/nvidia/610.57.04/ucodes_ga10x.bin' "$repo_root/builder/build-iso.sh"
 grep -Fq 'limine-mkinitcpio-hook=1.37.1-4' "$repo_root/builder/build-iso.sh"
-grep -Fq 'mkarchiso_command=/archiso/archiso/mkarchiso' "$repo_root/builder/build-iso.sh"
+grep -Fq 'mkarchiso_command=/tmp/mkarchiso-aarch64' "$repo_root/builder/build-iso.sh"
 grep -Fq 'arch-install-scripts' "$repo_root/builder/build-iso.sh"
+grep -Fq 'archiso-v87-aarch64-grub.patch' "$repo_root/builder/build-iso.sh"
+cp "$repo_root/archiso/archiso/mkarchiso" "$fixture/mkarchiso"
+patch --batch --forward "$fixture/mkarchiso" \
+  <"$repo_root/builder/archiso-v87-aarch64-grub.patch" >/dev/null
+grep -Fq 'source /builder/archiso-aarch64-grub-modules.sh' "$fixture/mkarchiso"
+grep -Fq 'filter_archiso_aarch64_grub_modules grubmodules' "$fixture/mkarchiso"
 grep -Fq 'patched AArch64 Limine hook' "$repo_root/builder/build-iso.sh"
 grep -Fq 'final GB10 offline repository must contain exactly one kernel and headers package' "$repo_root/builder/build-iso.sh"
 grep -Fq 'does not enable AArch64 reset recovery' "$repo_root/builder/build-iso.sh"
