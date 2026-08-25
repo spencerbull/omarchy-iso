@@ -220,7 +220,7 @@ patch --batch --forward --fuzz=0 "$fixture/mkarchiso" \
 grep -Fq 'source /builder/archiso-aarch64-grub-modules.sh' "$fixture/mkarchiso"
 grep -Fq 'filter_archiso_aarch64_grub_modules grubmodules' "$fixture/mkarchiso"
 cp "$repo_root/archiso/archiso/mkarchiso" "$fixture/drifted-mkarchiso"
-sed -i 's/minicmd normal/renamed_minicmd normal/' "$fixture/drifted-mkarchiso"
+sed -i 's/all_video at_keyboard boot/all_video renamed_at_keyboard boot/' "$fixture/drifted-mkarchiso"
 if patch --batch --forward --fuzz=0 --dry-run "$fixture/drifted-mkarchiso" \
   <"$repo_root/builder/archiso-v87-aarch64-grub.patch" >/dev/null 2>&1; then
   echo "strict Archiso patch unexpectedly accepted changed GRUB module context" >&2
