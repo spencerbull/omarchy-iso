@@ -55,11 +55,21 @@ source "$repo_root/builder/archiso-aarch64-mkinitcpio.sh"
 printf '%s\n' 'HOOKS=(base udev microcode modconf kms memdisk archiso filesystems keyboard)' >"$fixture/archiso.conf"
 configure_archiso_aarch64_mkinitcpio "$fixture/archiso.conf"
 [[ $(<"$fixture/archiso.conf") == 'HOOKS=(base udev modconf kms archiso filesystems keyboard)' ]]
+printf '%s\n' 'HOOKS=(microcode base udev modconf kms archiso filesystems keyboard memdisk)' >"$fixture/boundary-archiso.conf"
+configure_archiso_aarch64_mkinitcpio "$fixture/boundary-archiso.conf"
+[[ $(<"$fixture/boundary-archiso.conf") == 'HOOKS=(base udev modconf kms archiso filesystems keyboard)' ]]
 printf '%s\n' 'HOOKS=(base udev modconf kms archiso filesystems keyboard)' >"$fixture/unexpected-archiso.conf"
 if configure_archiso_aarch64_mkinitcpio "$fixture/unexpected-archiso.conf" >/dev/null 2>&1; then
   echo "AArch64 mkinitcpio overlay unexpectedly accepted a drifted hook layout" >&2
   exit 1
 fi
+printf '%s\n' 'HOOKS=(base udev microcode microcode modconf kms memdisk archiso filesystems keyboard)' >"$fixture/duplicate-archiso.conf"
+duplicate_hooks_before=$(<"$fixture/duplicate-archiso.conf")
+if configure_archiso_aarch64_mkinitcpio "$fixture/duplicate-archiso.conf" >/dev/null 2>&1; then
+  echo "AArch64 mkinitcpio overlay unexpectedly accepted duplicate x86-only hooks" >&2
+  exit 1
+fi
+[[ $(<"$fixture/duplicate-archiso.conf") == "$duplicate_hooks_before" ]]
 
 source "$repo_root/builder/arm64-kernel-image.sh"
 truncate -s 64 "$fixture/raw-arm64-image" "$fixture/efi-stub-arm64-image" "$fixture/invalid-efi-image"
@@ -205,10 +215,17 @@ grep -Fq 'mkarchiso_command=/tmp/mkarchiso-aarch64' "$repo_root/builder/build-is
 grep -Fq 'arch-install-scripts' "$repo_root/builder/build-iso.sh"
 grep -Fq 'archiso-v87-aarch64-grub.patch' "$repo_root/builder/build-iso.sh"
 cp "$repo_root/archiso/archiso/mkarchiso" "$fixture/mkarchiso"
-patch --batch --forward "$fixture/mkarchiso" \
+patch --batch --forward --fuzz=0 "$fixture/mkarchiso" \
   <"$repo_root/builder/archiso-v87-aarch64-grub.patch" >/dev/null
 grep -Fq 'source /builder/archiso-aarch64-grub-modules.sh' "$fixture/mkarchiso"
 grep -Fq 'filter_archiso_aarch64_grub_modules grubmodules' "$fixture/mkarchiso"
+cp "$repo_root/archiso/archiso/mkarchiso" "$fixture/drifted-mkarchiso"
+sed -i 's/minicmd normal/renamed_minicmd normal/' "$fixture/drifted-mkarchiso"
+if patch --batch --forward --fuzz=0 --dry-run "$fixture/drifted-mkarchiso" \
+  <"$repo_root/builder/archiso-v87-aarch64-grub.patch" >/dev/null 2>&1; then
+  echo "strict Archiso patch unexpectedly accepted changed GRUB module context" >&2
+  exit 1
+fi
 grep -Fq 'patched AArch64 Limine hook' "$repo_root/builder/build-iso.sh"
 grep -Fq 'final GB10 offline repository must contain exactly one kernel and headers package' "$repo_root/builder/build-iso.sh"
 grep -Fq 'does not enable AArch64 reset recovery' "$repo_root/builder/build-iso.sh"

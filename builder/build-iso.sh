@@ -51,7 +51,7 @@ if [[ $OMARCHY_ARCH == aarch64 ]]; then
   # the pinned submodule remains immutable and patch drift fails the build.
   mkarchiso_command=/tmp/mkarchiso-aarch64
   cp /archiso/archiso/mkarchiso "$mkarchiso_command"
-  patch --batch --forward "$mkarchiso_command" \
+  patch --batch --forward --fuzz=0 "$mkarchiso_command" \
     </builder/archiso-v87-aarch64-grub.patch
   chmod 0755 "$mkarchiso_command"
 else
