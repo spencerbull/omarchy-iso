@@ -32,11 +32,26 @@ pacman-key --init
 if [[ $OMARCHY_ARCH == aarch64 ]]; then
   pacman --noconfirm -Sy archlinuxarm-keyring
   pacman-key --populate archlinuxarm
+  # Arch Linux ARM does not publish the archiso package. Install the runtime
+  # dependencies declared by archiso and execute the repository's pinned
+  # submodule copy instead.
+  pacman --noconfirm -Sy \
+    arch-install-scripts \
+    dosfstools \
+    e2fsprogs \
+    erofs-utils \
+    libarchive \
+    libisoburn \
+    mtools \
+    squashfs-tools \
+    git sudo base-devel jq grub
+  mkarchiso_command=/archiso/archiso/mkarchiso
 else
   pacman --noconfirm -Sy archlinux-keyring
   pacman-key --populate archlinux
+  pacman --noconfirm -Sy archiso git sudo base-devel jq grub
+  mkarchiso_command=mkarchiso
 fi
-pacman --noconfirm -Sy archiso git sudo base-devel jq grub
 
 # Setup build locations.
 build_cache_dir=/var/cache
@@ -508,7 +523,7 @@ ln -s "$offline_mirror_dir" /var/cache/omarchy/mirror/offline
 # The live environment and target installer use only the complete offline repo.
 cp "$build_cache_dir/pacman-offline.conf" "$build_cache_dir/airootfs/etc/pacman.conf"
 
-mkarchiso -v -w "$build_cache_dir/work/" -o /out/ "$build_cache_dir/"
+"$mkarchiso_command" -v -w "$build_cache_dir/work/" -o /out/ "$build_cache_dir/"
 
 if [[ -n ${HOST_UID:-} && -n ${HOST_GID:-} ]]; then
   chown -R "$HOST_UID:$HOST_GID" /out/
