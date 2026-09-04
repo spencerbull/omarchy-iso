@@ -116,4 +116,12 @@
   come after `/etc/default/limine` fragments; among drop-ins the alphabetically
   first file's fragment lands last. `BOOT_ORDER` is last-file-wins.
 - [ ] Build on Coleman with `--local-source <omarchy-n1x-quattro> <omarchy-pkgs>`
-  and `--package-dir`, install on the laptop, validate.
+  and `--package-dir`, install on the laptop, validate. Build loop so far
+  (`/home/dell/omarchy-gb10-builds/n1x-quattro/quattro-n1x-build{1..4}.log`):
+  1 died on the zstd-only glob in `build-omarchy-packages.sh` (ALARM emits
+  `.pkg.tar.xz`); 2 on `mise-bin`/`dell-xps13-sidecar-amps` not existing for
+  aarch64; 3 on the shipped manifests being unfiltered for the expected-package
+  count (and they would have broken pacstrap the same way). All fixed and
+  pushed. Build 3's local makepkg printed `libfakeroot internal error: payload
+  not recognized!` without failing; watch whether the built omarchy-dev is
+  complete.
