@@ -118,6 +118,22 @@ forks: ISO `gb10-dev-installer-iso` @ `d624082`, installer
 created/fast-forwarded to upstream on 2026-09-03. The ISO fork's default
 branch `main` was left untouched.
 
+Status 2026-09-03 late evening: ISO steps 1-4 and runtime step 5 are committed
+and pushed (`spencerbull/omarchy-iso` `n1x-quattro` @ `718fe88`,
+`spencerbull/omarchy` `n1x-quattro` @ `5f67aa9f`). First end-to-end build is
+running on Coleman under `/home/dell/omarchy-gb10-builds/n1x-quattro/`
+(clones of both fork branches plus an rsync of the pkgs worktree; log
+`quattro-n1x-build1.log`). Build command:
+
+```bash
+cd /home/dell/omarchy-gb10-builds/n1x-quattro/iso
+bin/omarchy-iso-make --arch aarch64 --platform n1x \
+  --package-dir /home/dell/omarchy-gb10-builds/n1x-7.0.14-20260903/package-bundle \
+  --local-source /home/dell/omarchy-gb10-builds/n1x-quattro/omarchy \
+                 /home/dell/omarchy-gb10-builds/n1x-quattro/omarchy-pkgs \
+  --keep-pkg-cache --no-boot-offer --debug
+```
+
 Port order (each step: quattro test suite + ours, then commit):
 
 1. ISO build entrypoint and builder: arm64 container, Arch Linux ARM mirrors
