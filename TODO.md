@@ -100,16 +100,20 @@
 - [x] ISO step 1-3: `--arch aarch64 --platform n1x --package-dir`, builder
   overlay, archiso arm64 patches, GRUB templating + N1x recovery entry,
   `test/unit/aarch64-build-test.sh`; quattro unit suite green.
-- [ ] Bundle: aarch64 builds of quattro-era Omarchy packages (herdr, omacalc,
-  omacut, omawrite, ttfx, obsidian, ttf-jetbrains-mono-nerd-basic) running on
-  Coleman (`aarch64-quattro-pkgs-build.log`); add them to `package-bundle` and
-  refresh `SHA256SUMS`.
-- [ ] ISO step 4: configurator/orchestrator aarch64 (kernel `linux-n1x`,
-  `limine_aa64.efi`/`BOOTAA64.EFI`, archinstall aarch64 patch, no tzupdate).
-- [ ] Runtime step 5 in `omarchy-n1x-quattro`: `install/hardware/n1x-*.sh`
-  (kernel already installed by archinstall `kernels`; input modules; Limine
-  drop-in `zz-n1x.conf` with `console=tty0 acpi=nospcr`, no quiet, rescue
-  entry), NVIDIA carve-out in `install/hardware/nvidia.sh`, recovery SSH/probe,
-  aarch64 pacman conf + Node handoff, ARM lifecycle guards, tests.
+- [x] Bundle: aarch64 builds of herdr, omacalc, omacut, omawrite, ttfx,
+  obsidian, ttf-jetbrains-mono-nerd-basic added to `package-bundle` (120
+  archives, `SHA256SUMS` verifies).
+- [x] ISO step 4: configurator picks `linux-<platform>`, `limine_aa64.efi`, ALARM
+  mirror on aarch64; orchestrator derives `BOOTAA64.EFI`/`limine_aa64.efi` from
+  the machine architecture. No archinstall patch needed: quattro installs Limine
+  itself. `tzupdate` no longer used by the configurator.
+- [x] Runtime step 5 (`omarchy-n1x-quattro`): `bin/omarchy-hw-n1x`,
+  `install/hardware/n1x.sh`, NVIDIA carve-out, aarch64 initramfs hooks/modules,
+  ALARM pacman config, arch-aware Node tarball, `test/shell.d/hw-n1x-test.sh`.
+  Deferred: ARM guards on `omarchy-update`-family commands (no aarch64 package
+  channel yet), a pacman hook so the rescue UKI follows kernel upgrades.
+- [ ] Limine entry-tool ordering, measured on the target: drop-in `+=` fragments
+  come after `/etc/default/limine` fragments; among drop-ins the alphabetically
+  first file's fragment lands last. `BOOT_ORDER` is last-file-wins.
 - [ ] Build on Coleman with `--local-source <omarchy-n1x-quattro> <omarchy-pkgs>`
   and `--package-dir`, install on the laptop, validate.
