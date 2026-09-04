@@ -125,3 +125,6 @@
   pushed. Build 3's local makepkg printed `libfakeroot internal error: payload
   not recognized!` without failing; watch whether the built omarchy-dev is
   complete.
+  Build 4 succeeded (`omarchy-2026.09.04-aarch64-n1x-local.iso`,
+  `c2f3620378507c971f20d1695a034f78853fc19477eb921b077684f15dfd5d90`);
+  omarchy-dev is complete. Physical install test pending.

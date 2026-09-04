@@ -134,6 +134,27 @@ bin/omarchy-iso-make --arch aarch64 --platform n1x \
   --keep-pkg-cache --no-boot-offer --debug
 ```
 
+First successful quattro-flow ISO (build 4, 2026-09-03 23:51):
+
+```text
+/home/dell/omarchy-gb10-builds/n1x-quattro/iso/release/omarchy-2026.09.04-aarch64-n1x-local.iso
+size:   4,348,592,128 bytes
+sha256: c2f3620378507c971f20d1695a034f78853fc19477eb921b077684f15dfd5d90
+staged as /home/sbull/UNAS/omarchy-2026.09.04-aarch64-n1x-quattro1.iso (and ~/Downloads)
+log:    /home/dell/omarchy-gb10-builds/n1x-quattro/quattro-n1x-build4.log
+```
+
+Inspected: GRUB boots `vmlinuz-linux-n1x` with `console=tty0 acpi=nospcr`,
+recovery entry present, `BOOTAA64.EFI` PE, raw ARM64 kernel; live root marks
+`aarch64`/`n1x`, hostname `omarchy-n1x-rescue`, kernel tree `7.0.14-2-n1x`,
+shipped base manifest filtered (145 packages: `mise`, no `linux`/`tzupdate`),
+936 expected target packages; offline mirror carries `linux-n1x` pkgrel 2,
+`omarchy-dev` (with `install/hardware/n1x.sh`, `omarchy-hw-n1x`,
+`omarchy-n1x-probe`), `omarchy-settings-dev` (aarch64 initramfs hook branch),
+`omarchy-nvim`, `nvidia-open-dkms` 610.57.04. Not yet booted on hardware.
+Built one commit before `e085d84` (adds `i2c_mt65xx` to the live initramfs);
+the live keyboard still works there because the module loads from the root.
+
 Port order (each step: quattro test suite + ours, then commit):
 
 1. ISO build entrypoint and builder: arm64 container, Arch Linux ARM mirrors
