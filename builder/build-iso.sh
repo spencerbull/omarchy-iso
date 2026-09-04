@@ -7,18 +7,24 @@ source /builder/arm64-kernel-image.sh
 source /builder/limine-hook.sh
 source /builder/gb10-omarchy-source.sh
 source /builder/archiso-aarch64-mkinitcpio.sh
+source /builder/grub-platform.sh
 
 OMARCHY_ARCH=${OMARCHY_ARCH:-x86_64}
 OMARCHY_KERNEL=${OMARCHY_KERNEL:-linux-t2}
+OMARCHY_ARM_PLATFORM=${OMARCHY_ARM_PLATFORM:-}
 
 case "$OMARCHY_ARCH:$OMARCHY_KERNEL" in
   x86_64:linux-t2)
     online_pacman_conf="/configs/pacman-online-${OMARCHY_MIRROR}.conf"
     ;;
-  aarch64:linux-gb10)
+  aarch64:linux-gb10|aarch64:linux-n1x)
+    if [[ $OMARCHY_KERNEL != "linux-$OMARCHY_ARM_PLATFORM" ]]; then
+      echo "ERROR: ARM platform/kernel mismatch: $OMARCHY_ARM_PLATFORM/$OMARCHY_KERNEL" >&2
+      exit 1
+    fi
     online_pacman_conf=/configs/pacman-online-gb10.conf
     if [[ ${OMARCHY_PACKAGE_DIR:-} != /packages || ! -d /packages ]]; then
-      echo "ERROR: GB10 builds require the prebuilt package directory at /packages" >&2
+      echo "ERROR: $OMARCHY_ARM_PLATFORM builds require the prebuilt package directory at /packages" >&2
       exit 1
     fi
     ;;
@@ -87,13 +93,13 @@ validate_package_archive() {
   fi
 
   if [[ $OMARCHY_ARCH == aarch64 && $package_arch != aarch64 && $package_arch != any ]]; then
-    echo "ERROR: GB10 package '$package_name' has unsupported architecture '$package_arch': $archive" >&2
+    echo "ERROR: ARM package '$package_name' has unsupported architecture '$package_arch': $archive" >&2
     return 1
   fi
   if [[ $OMARCHY_ARCH == aarch64 ]]; then
     case "$package_name" in
       amd-ucode|intel-ucode|syslinux|broadcom-wl|linux-t2|linux-t2-headers|apple-bcm-firmware|apple-t2-audio-config|t2fanrd|tiny-dfr|lib32-*)
-        echo "ERROR: x86-only package '$package_name' is forbidden in the GB10 offline repository" >&2
+        echo "ERROR: x86-only package '$package_name' is forbidden in the ARM offline repository" >&2
         return 1
         ;;
     esac
@@ -118,7 +124,7 @@ rebuild_offline_repo() {
   repo-add "$offline_mirror_dir/offline.db.tar.gz" "${archives[@]}"
 }
 
-seed_gb10_packages() {
+seed_arm_packages() {
   local archive
   local runtime_count=0
   local headers_count=0
@@ -144,7 +150,7 @@ seed_gb10_packages() {
   done < <(find /packages -maxdepth 1 -type f \
     \( -name '*.pkg.tar.xz' -o -name '*.pkg.tar.zst' \) -print)
   if ! (cd /packages && sha256sum --check --strict SHA256SUMS); then
-    echo "ERROR: GB10 package checksum verification failed" >&2
+    echo "ERROR: $OMARCHY_ARM_PLATFORM package checksum verification failed" >&2
     return 1
   fi
 
@@ -160,32 +166,32 @@ seed_gb10_packages() {
   for archive in "${archives[@]}"; do
     validate_package_archive "$archive"
     case "$package_name" in
-      linux-gb10)
+      "$OMARCHY_KERNEL")
         ((runtime_count += 1))
         runtime_version=$package_version
         kernel_members=()
         mapfile -t kernel_members < <(bsdtar -tf "$archive" | grep -E '^usr/lib/modules/[^/]+/vmlinuz$' || true)
         if (( ${#kernel_members[@]} != 1 )); then
-          echo "ERROR: linux-gb10 must contain exactly one module-tree vmlinuz" >&2
+          echo "ERROR: $OMARCHY_KERNEL must contain exactly one module-tree vmlinuz" >&2
           return 1
         fi
         kernel_member=${kernel_members[0]}
         extracted_kernel=$(mktemp)
         if ! bsdtar -xOf "$archive" "$kernel_member" >"$extracted_kernel"; then
           rm -f -- "$extracted_kernel"
-          echo "ERROR: failed to extract linux-gb10 vmlinuz for validation" >&2
+          echo "ERROR: failed to extract $OMARCHY_KERNEL vmlinuz for validation" >&2
           return 1
         fi
         arm64_magic=$(raw_arm64_image_magic "$extracted_kernel")
         arm64_prefix=$(raw_arm64_image_prefix "$extracted_kernel")
         if ! is_raw_arm64_kernel_image "$extracted_kernel"; then
           rm -f -- "$extracted_kernel"
-          echo "ERROR: linux-gb10 vmlinuz is not a raw ARM64 Image (magic at offset 56 is ${arm64_magic:-missing}, prefix is ${arm64_prefix:-missing})" >&2
+          echo "ERROR: $OMARCHY_KERNEL vmlinuz is not a raw ARM64 Image (magic at offset 56 is ${arm64_magic:-missing}, prefix is ${arm64_prefix:-missing})" >&2
           return 1
         fi
         rm -f -- "$extracted_kernel"
         ;;
-      linux-gb10-headers)
+      "$OMARCHY_KERNEL-headers")
         ((headers_count += 1))
         headers_version=$package_version
         ;;
@@ -194,11 +200,11 @@ seed_gb10_packages() {
   done
 
   if (( runtime_count != 1 || headers_count != 1 )); then
-    echo "ERROR: /packages must contain exactly one linux-gb10 and one linux-gb10-headers archive" >&2
+    echo "ERROR: /packages must contain exactly one $OMARCHY_KERNEL and one $OMARCHY_KERNEL-headers archive" >&2
     return 1
   fi
   if [[ $runtime_version != "$headers_version" ]]; then
-    echo "ERROR: linux-gb10 runtime ($runtime_version) and headers ($headers_version) versions do not match" >&2
+    echo "ERROR: $OMARCHY_KERNEL runtime ($runtime_version) and headers ($headers_version) versions do not match" >&2
     return 1
   fi
 
@@ -206,14 +212,14 @@ seed_gb10_packages() {
 }
 
 if [[ $OMARCHY_ARCH == aarch64 ]]; then
-  seed_gb10_packages
+  seed_arm_packages
 fi
 
 # Pre-import the Omarchy signing key so pacman can verify published packages.
 pacman-key --add /builder/omarchy.gpg
 pacman-key --lsign-key 40DFB630FF42BCFFB047046CF0134EE680CAC571
 
-# In GB10 mode omarchy-keyring must be supplied by the prebuilt package
+# In ARM image mode omarchy-keyring must be supplied by the prebuilt package
 # directory. x86_64 continues to use the selected published channel.
 pacman --config "$online_pacman_conf" --noconfirm -Sy omarchy-keyring
 pacman-key --populate omarchy
@@ -235,7 +241,7 @@ if [[ $OMARCHY_ARCH == aarch64 ]]; then
   # Start from releng's maintained live package list, but explicitly remove
   # x86-only firmware, virtualization, rescue, and BIOS boot packages. The
   # Omarchy base manifest is handled separately below and is never filtered.
-  gb10_live_excludes=(
+  arm_live_excludes=(
     amd-ucode
     broadcom-wl
     edk2-shell
@@ -251,30 +257,49 @@ if [[ $OMARCHY_ARCH == aarch64 ]]; then
     virtualbox-guest-utils-nox
   )
   cp "$build_cache_dir/packages.x86_64" "$build_cache_dir/packages.aarch64"
-  for excluded_package in "${gb10_live_excludes[@]}"; do
+  for excluded_package in "${arm_live_excludes[@]}"; do
     escaped_package=${excluded_package//+/[+]}
     sed -i "\\|^${escaped_package}$|d" "$build_cache_dir/packages.aarch64"
   done
 
   rm "$build_cache_dir/airootfs/etc/mkinitcpio.d/linux.preset"
-  cp /builder/linux-gb10.preset "$build_cache_dir/airootfs/etc/mkinitcpio.d/linux-gb10.preset"
+  cp "/builder/${OMARCHY_KERNEL}.preset" "$build_cache_dir/airootfs/etc/mkinitcpio.d/${OMARCHY_KERNEL}.preset"
   configure_archiso_aarch64_mkinitcpio \
     "$build_cache_dir/airootfs/etc/mkinitcpio.conf.d/archiso.conf"
-  kernel_options=""
+  boot_splash_kernel_options=""
+  kernel_options="plymouth.enable=0"
 else
+  boot_splash_kernel_options="quiet splash "
   kernel_options="xe.enable_panel_replay=0"
 fi
 
 for grub_config in "$build_cache_dir/grub/grub.cfg" "$build_cache_dir/grub/loopback.cfg"; do
+  configure_grub_platform "$grub_config" "$OMARCHY_ARM_PLATFORM"
   sed -i \
     -e "s|%KERNEL%|$OMARCHY_KERNEL|g" \
+    -e "s|%BOOT_SPLASH_KERNEL_OPTIONS%|$boot_splash_kernel_options|g" \
     -e "s|%KERNEL_OPTIONS%|$kernel_options|g" \
     "$grub_config"
 done
 
+if [[ $OMARCHY_ARM_PLATFORM == n1x ]]; then
+  # The diagnostic entry must remain useful when the display driver cannot
+  # bind the pre-release GPU. Provision key-only SSH before boot so Ethernet
+  # DHCP provides an out-of-band path even if the local console stays black.
+  install -d -m0700 "$build_cache_dir/airootfs/root/.ssh"
+  install -m0600 /builder/n1x-recovery-authorized-key \
+    "$build_cache_dir/airootfs/root/.ssh/authorized_keys"
+  install -Dm0644 /builder/n1x-recovery-sshd.conf \
+    "$build_cache_dir/airootfs/etc/ssh/sshd_config.d/20-omarchy-n1x-recovery.conf"
+  printf '%s\n' omarchy-n1x-rescue >"$build_cache_dir/airootfs/etc/hostname"
+fi
+
 # Persist the build selection for the live installer.
 echo "$OMARCHY_MIRROR" > "$build_cache_dir/airootfs/root/omarchy_mirror"
 echo "$OMARCHY_ARCH" > "$build_cache_dir/airootfs/root/omarchy_arch"
+if [[ $OMARCHY_ARCH == aarch64 ]]; then
+  echo "$OMARCHY_ARM_PLATFORM" > "$build_cache_dir/airootfs/root/omarchy_arm_platform"
+fi
 
 # Setup Omarchy itself.
 if [[ -d /omarchy ]]; then
@@ -285,7 +310,7 @@ fi
 
 if [[ $OMARCHY_ARCH == aarch64 ]]; then
   omarchy_source="$build_cache_dir/airootfs/root/omarchy"
-  validate_gb10_omarchy_source "$omarchy_source"
+  validate_arm_omarchy_source "$omarchy_source"
 fi
 
 # Make log uploader available in the ISO too.
@@ -320,7 +345,7 @@ cp "/tmp/$NODE_FILENAME" "$build_cache_dir/airootfs/opt/packages/"
 # Add packages installed in the live ISO itself.
 packages_file="$build_cache_dir/packages.$OMARCHY_ARCH"
 if [[ $OMARCHY_ARCH == aarch64 ]]; then
-  arch_packages=(linux-gb10 archlinuxarm-keyring git gum jq openssl plymouth omarchy-keyring lvm2 cryptsetup parted)
+  arch_packages=("$OMARCHY_KERNEL" archlinuxarm-keyring git gum jq openssl openssh pciutils plymouth omarchy-keyring lvm2 cryptsetup parted)
 else
   arch_packages=(linux-t2 git gum jq openssl plymouth tzupdate omarchy-keyring lvm2 cryptsetup parted)
 fi
@@ -331,22 +356,22 @@ read_package_list() {
   awk '!/^[[:space:]]*(#|$)/ { print $1 }' "$list"
 }
 
-append_gb10_platform_packages() {
+append_arm_platform_packages() {
   local list=$1
   local package
 
   while IFS= read -r package; do
     case "$package" in
       amd-ucode|intel-ucode|syslinux|broadcom-wl|apple-*|asusctl|dell-xps-touchpad-haptics|intel-ipu7-camera|intel-lpmd|intel-media-driver|libva-intel-driver|lib32-*|linux-firmware-marvell|linux-ptl|linux-ptl-headers|linux-t2|linux-t2-headers|macbook12-spi-driver-dkms|nvidia-580xx-*|nvidia-dkms|t2fanrd|thermald|tiny-dfr|tuxedo-drivers-nocompatcheck-dkms|vpl-gpu-rt|vulkan-asahi|vulkan-intel|vulkan-radeon|yt6801-dkms)
-        echo "GB10: excluding platform-irrelevant package from $list: $package"
+        echo "$OMARCHY_ARM_PLATFORM: excluding platform-irrelevant package from $list: $package"
         ;;
       linux|linux-t2)
-        echo "GB10: replacing $package with linux-gb10 from $list"
-        all_packages+=(linux-gb10)
+        echo "$OMARCHY_ARM_PLATFORM: replacing $package with $OMARCHY_KERNEL from $list"
+        all_packages+=("$OMARCHY_KERNEL")
         ;;
       linux-headers|linux-t2-headers)
-        echo "GB10: replacing $package with linux-gb10-headers from $list"
-        all_packages+=(linux-gb10-headers)
+        echo "$OMARCHY_ARM_PLATFORM: replacing $package with $OMARCHY_KERNEL-headers from $list"
+        all_packages+=("$OMARCHY_KERNEL-headers")
         ;;
       *)
         all_packages+=("$package")
@@ -385,16 +410,16 @@ fi
 all_packages+=("${omarchy_base_packages[@]}")
 
 if [[ $OMARCHY_ARCH == aarch64 ]]; then
-  append_gb10_platform_packages "$other_packages"
-  append_gb10_platform_packages /builder/archinstall.packages
+  append_arm_platform_packages "$other_packages"
+  append_arm_platform_packages /builder/archinstall.packages
   all_packages+=(
-    linux-gb10
-    linux-gb10-headers
+    "$OMARCHY_KERNEL"
+    "$OMARCHY_KERNEL-headers"
     archlinuxarm-keyring
     nvidia-open-dkms=610.57.04-1
     nvidia-utils=610.57.04-1
     libva-nvidia-driver
-    limine-mkinitcpio-hook=1.37.1-4
+    limine-mkinitcpio-hook=1.38.0-1
     limine-snapper-sync=1.31.0-1
   )
 else
@@ -427,79 +452,96 @@ if [[ $OMARCHY_ARCH == aarch64 ]]; then
     [[ $archive == *.sig ]] && continue
     validate_package_archive "$archive"
     case "$package_name" in
-      linux-gb10)
+      "$OMARCHY_KERNEL")
         ((final_kernel_count += 1))
         final_kernel_version=$package_version
         mapfile -t final_kernel_members < <(bsdtar -tf "$archive" | grep -E '^usr/lib/modules/[^/]+/vmlinuz$' || true)
         if (( ${#final_kernel_members[@]} != 1 )); then
-          echo "ERROR: final linux-gb10 package must contain exactly one module-tree vmlinuz" >&2
+          echo "ERROR: final $OMARCHY_KERNEL package must contain exactly one module-tree vmlinuz" >&2
           exit 1
         fi
         final_kernel_image=$(mktemp)
         if ! bsdtar -xOf "$archive" "${final_kernel_members[0]}" >"$final_kernel_image"; then
           rm -f -- "$final_kernel_image"
-          echo "ERROR: failed to extract final linux-gb10 vmlinuz for validation" >&2
+          echo "ERROR: failed to extract final $OMARCHY_KERNEL vmlinuz for validation" >&2
           exit 1
         fi
         if ! is_raw_arm64_kernel_image "$final_kernel_image"; then
           final_magic=$(raw_arm64_image_magic "$final_kernel_image")
           final_prefix=$(raw_arm64_image_prefix "$final_kernel_image")
           rm -f -- "$final_kernel_image"
-          echo "ERROR: final linux-gb10 vmlinuz is not a raw ARM64 Image (magic ${final_magic:-missing}, prefix ${final_prefix:-missing})" >&2
+          echo "ERROR: final $OMARCHY_KERNEL vmlinuz is not a raw ARM64 Image (magic ${final_magic:-missing}, prefix ${final_prefix:-missing})" >&2
           exit 1
         fi
         rm -f -- "$final_kernel_image"
         ;;
-      linux-gb10-headers)
+      "$OMARCHY_KERNEL-headers")
         ((final_headers_count += 1))
         final_headers_version=$package_version
         ;;
       nvidia-open-dkms)
         ((nvidia_open_count += 1))
         if [[ $package_version != 610.57.04-1 ]]; then
-          echo "ERROR: GB10 requires nvidia-open-dkms 610.57.04-1, found $package_version" >&2
+          echo "ERROR: $OMARCHY_ARM_PLATFORM requires nvidia-open-dkms 610.57.04-1, found $package_version" >&2
           exit 1
         fi
         ;;
       nvidia-utils)
         ((nvidia_utils_count += 1))
         if [[ $package_version != 610.57.04-1 ]]; then
-          echo "ERROR: GB10 requires nvidia-utils 610.57.04-1, found $package_version" >&2
+          echo "ERROR: $OMARCHY_ARM_PLATFORM requires nvidia-utils 610.57.04-1, found $package_version" >&2
           exit 1
         fi
         for firmware in \
           usr/lib/firmware/nvidia/610.57.04/gsp_ga10x.bin \
           usr/lib/firmware/nvidia/610.57.04/ucodes_ga10x.bin; do
           if ! bsdtar -tf "$archive" | grep -Fxq "$firmware"; then
-            echo "ERROR: nvidia-utils is missing GB10 firmware payload $firmware" >&2
+            echo "ERROR: nvidia-utils is missing ARM firmware payload $firmware" >&2
             exit 1
           fi
         done
         ;;
       limine-mkinitcpio-hook)
         ((limine_hook_count += 1))
-        if [[ $package_version != 1.37.1-4 ]]; then
-          echo "ERROR: GB10 requires limine-mkinitcpio-hook 1.37.1-4, found $package_version" >&2
+        if [[ $package_version != 1.38.0-1 ]]; then
+          echo "ERROR: $OMARCHY_ARM_PLATFORM requires limine-mkinitcpio-hook 1.38.0-1, found $package_version" >&2
           exit 1
         fi
         common_functions=usr/lib/limine/limine-common-functions
         limine_install=usr/bin/limine-install
-        for aarch64_marker in BOOTAA64.EFI limine_aa64.efi systemd-bootaa64.efi; do
-          if ! bsdtar -xOf "$archive" "$common_functions" | grep -Fq "$aarch64_marker"; then
-            echo "ERROR: patched Limine hook is missing AArch64 marker $aarch64_marker" >&2
+        limine_mkinitcpio_install=usr/share/libalpm/scripts/limine-mkinitcpio-install
+        if ! common_functions_content=$(bsdtar -xOf "$archive" "$common_functions") ||
+          ! limine_install_content=$(bsdtar -xOf "$archive" "$limine_install") ||
+          ! limine_mkinitcpio_install_content=$(bsdtar -xOf "$archive" "$limine_mkinitcpio_install"); then
+          echo "ERROR: failed to extract Limine hook validation payload" >&2
+          exit 1
+        fi
+        for aarch64_marker in \
+          'aarch64)     echo "AA64"' \
+          'BINARY_SOURCE_PATH="/usr/share/limine/BOOT$(limine_efi_arch).EFI"' \
+          'LIMINE_EFI_FILE="limine_${_limine_arch_lc}.efi"' \
+          'BINARY_FALLBACK_PATH="${ESP_PATH}/EFI/BOOT/BOOT$(limine_efi_arch).EFI"'; do
+          if ! grep -Fq "$aarch64_marker" <<<"$common_functions_content"; then
+            echo "ERROR: Limine hook is missing AArch64 marker $aarch64_marker" >&2
             exit 1
           fi
         done
-        if ! bsdtar -xOf "$archive" "$limine_install" | grep -Fq 'is_supported_uefi_arch'; then
-          echo "ERROR: patched Limine installer does not enable its AArch64 deployment path" >&2
+        if ! grep -Fq 'is_supported_arch' <<<"$limine_install_content" ||
+          ! grep -Fq 'systemd-boot$(limine_efi_arch' <<<"$limine_install_content" ||
+          ! grep -Fq 'EFI/BOOT/BOOT$(limine_efi_arch).EFI' <<<"$limine_install_content"; then
+          echo "ERROR: Limine installer does not enable its AArch64 deployment path" >&2
           exit 1
         fi
-        if ! bsdtar -xOf "$archive" "$common_functions" | limine_function_uses_supported_arch reset_enroll_config; then
-          echo "ERROR: patched Limine hook does not enable AArch64 reset recovery" >&2
+        if ! limine_function_uses_supported_arch reset_enroll_config <<<"$common_functions_content"; then
+          echo "ERROR: Limine hook does not enable AArch64 reset recovery" >&2
           exit 1
         fi
-        if ! bsdtar -xOf "$archive" "$common_functions" | limine_function_uses_supported_arch enroll_config; then
-          echo "ERROR: patched Limine hook does not enable AArch64 config enrollment" >&2
+        if ! limine_function_uses_supported_arch enroll_config <<<"$common_functions_content"; then
+          echo "ERROR: Limine hook does not enable AArch64 config enrollment" >&2
+          exit 1
+        fi
+        if ! grep -Fq 'modules.builtin' <<<"$limine_mkinitcpio_install_content"; then
+          echo "ERROR: Limine hook cannot discover ARM kernels without pkgbase metadata" >&2
           exit 1
         fi
         ;;
@@ -507,19 +549,19 @@ if [[ $OMARCHY_ARCH == aarch64 ]]; then
   done
   shopt -u nullglob
   if (( nvidia_open_count != 1 || nvidia_utils_count != 1 )); then
-    echo "ERROR: GB10 offline repository must contain exactly one NVIDIA 610.57.04 open driver/userspace pair" >&2
+    echo "ERROR: $OMARCHY_ARM_PLATFORM offline repository must contain exactly one NVIDIA 610.57.04 open driver/userspace pair" >&2
     exit 1
   fi
   if (( limine_hook_count != 1 )); then
-    echo "ERROR: GB10 offline repository must contain exactly one patched AArch64 Limine hook" >&2
+    echo "ERROR: $OMARCHY_ARM_PLATFORM offline repository must contain exactly one AArch64 Limine hook" >&2
     exit 1
   fi
   if (( final_kernel_count != 1 || final_headers_count != 1 )); then
-    echo "ERROR: final GB10 offline repository must contain exactly one kernel and headers package" >&2
+    echo "ERROR: final $OMARCHY_ARM_PLATFORM offline repository must contain exactly one kernel and headers package" >&2
     exit 1
   fi
   if [[ $final_kernel_version != "$final_headers_version" ]]; then
-    echo "ERROR: final GB10 kernel ($final_kernel_version) and headers ($final_headers_version) versions do not match" >&2
+    echo "ERROR: final $OMARCHY_ARM_PLATFORM kernel ($final_kernel_version) and headers ($final_headers_version) versions do not match" >&2
     exit 1
   fi
 fi

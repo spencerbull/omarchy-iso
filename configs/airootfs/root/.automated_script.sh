@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+n1x_live_recovery_requested() {
+  grep -Eq '(^|[[:space:]])omarchy\.n1x_recovery=1([[:space:]]|$)' /proc/cmdline
+}
+
+run_n1x_live_recovery() {
+  /usr/local/sbin/omarchy-n1x-live-probe || true
+
+  echo
+  echo "N1x recovery shell"
+  echo "Probe: /var/log/omarchy-n1x-live-probe.log"
+  echo "SSH:   ssh root@omarchy-n1x-rescue.local (Ethernet DHCP)"
+  echo
+
+  exec /bin/bash -l
+}
+
 use_omarchy_helpers() {
   # Activates live-environment cleanup of the target's temporary installer
   # sudoers file before the shared ERR/INT/TERM/EXIT traps are installed.
@@ -9,6 +25,13 @@ use_omarchy_helpers() {
   export OMARCHY_INSTALL="/root/omarchy/install"
   export OMARCHY_INSTALL_LOG_FILE="/var/log/omarchy-install.log"
   export OMARCHY_MIRROR="$(cat /root/omarchy_mirror)"
+  if [[ $(uname -m) == aarch64 ]]; then
+    # Temporary N1x bring-up mode: authorize the complete AArch64 image without
+    # classifying the target as a specific NVIDIA product, and show complete logs.
+    export OMARCHY_ARM_IMAGE_INSTALL=1
+    export OMARCHY_ARM_PLATFORM="$(cat /root/omarchy_arm_platform)"
+    export OMARCHY_INSTALL_DEBUG_LOGS=1
+  fi
   source /root/omarchy/install/helpers/all.sh
 }
 
@@ -266,14 +289,21 @@ chroot_bash() {
     OMARCHY_USER_NAME="$(<user_full_name.txt)" \
     OMARCHY_USER_EMAIL="$(<user_email_address.txt)" \
     OMARCHY_MIRROR="$OMARCHY_MIRROR" \
+    OMARCHY_ARM_IMAGE_INSTALL="${OMARCHY_ARM_IMAGE_INSTALL:-0}" \
+    OMARCHY_ARM_PLATFORM="${OMARCHY_ARM_PLATFORM:-}" \
+    OMARCHY_INSTALL_DEBUG_LOGS="${OMARCHY_INSTALL_DEBUG_LOGS:-0}" \
     USER="$OMARCHY_USER" \
     HOME="/home/$OMARCHY_USER" \
     /bin/bash "$@"
 }
 
 if [[ $(tty) == "/dev/tty1" ]]; then
-  use_omarchy_helpers
-  run_configurator
-  install_arch
-  install_omarchy
+  if n1x_live_recovery_requested; then
+    run_n1x_live_recovery
+  else
+    use_omarchy_helpers
+    run_configurator
+    install_arch
+    install_omarchy
+  fi
 fi

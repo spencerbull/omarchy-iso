@@ -12,11 +12,12 @@ abort() {
 }
 
 machine_arch=$(uname -m)
-if [[ $machine_arch == aarch64 ]] && ! omarchy_is_gb10 /sys; then
-  abort "This AArch64 installer only supports NVIDIA GB10 systems"
+if [[ $machine_arch == aarch64 ]] &&
+  [[ ${OMARCHY_ARM_IMAGE_INSTALL:-} != 1 || ${OMARCHY_ARM_PLATFORM:-} != "gb10" && ${OMARCHY_ARM_PLATFORM:-} != "n1x" ]]; then
+  abort "This AArch64 installer requires an authorized GB10 or N1x image"
 fi
 
-# tzupdate has no AArch64 package. GB10 uses the normal timezone picker when
+# tzupdate has no AArch64 package. The development image uses the normal timezone picker when
 # geolocation is unavailable; x86_64 retains the existing automatic guess.
 if [[ $machine_arch != aarch64 ]]; then
   command -v tzupdate >/dev/null || sudo pacman -Sy --noconfirm tzupdate
@@ -370,12 +371,13 @@ boot_partition_size=$((2 * gib))
 main_partition_start=$((boot_partition_size + boot_partition_start))
 main_partition_size=$((disk_size_in_mib - main_partition_start - gpt_backup_reserve))
 
-# Select the qualified GB10 kernel only after the exact platform guard above.
+# Select the image-qualified kernel only after the platform guard above.
 if [[ $machine_arch == aarch64 ]]; then
-  kernel_choice="linux-gb10"
+  kernel_choice="linux-$OMARCHY_ARM_PLATFORM"
   archinstall_custom_servers='            {"url": "http://mirror.archlinuxarm.org/aarch64/$repo"}'
   archinstall_extra_packages='        "archlinuxarm-keyring",
-        "linux-gb10-headers",'
+        "linux-'"$OMARCHY_ARM_PLATFORM"'-headers",
+        "openssh",'
 elif lspci -nn 2>/dev/null | grep -q "106b:180[12]"; then
   kernel_choice="linux-t2"
   archinstall_custom_servers='            {"url": "https://mirror.omarchy.org/$repo/os/$arch"},
