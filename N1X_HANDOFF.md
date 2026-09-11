@@ -119,6 +119,11 @@ On the recovery5 install (normal entry, NVIDIA blacklist lifted):
   nvidia_drm)`) plus `initcall_blacklist=simpledrm_platform_driver_init` on
   the normal entry, as NVIDIA ships on the Spark, so only one DRM device
   exists and no environment override is needed.
+  **Verified 2026-09-11 10:41:** after an unattended reboot `/dev/dri` has
+  only the NVIDIA `card0` + `renderD128`, fb0 is `nvidia-drmdrmfb`, Hyprland
+  starts on `eDP-1` 1920x1200@120 with `AQ_DRM_DEVICES` removed. This is
+  the configuration `install/hardware/n1x.sh` now applies on firmware
+  >= 1.0.0; on 0.x firmware it keeps the software-rendering blacklist.
 - The embedded controller is unchanged: `ARML0002`, FFH offset 2, ACPI
   errors persist. The DSDT shrank (337 KB -> 254 KB) but the EC binding did
   not change.

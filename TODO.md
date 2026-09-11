@@ -72,8 +72,11 @@
   the GPU and `nvidia-smi` works. Never FLR the GPU (hangs the SoC).
 - [x] Panel on NVIDIA KMS: desktop at 1920x1200@120 on eDP-1 (2026-09-11 10:39)
   once Aquamarine is limited to the NVIDIA device.
-- [ ] Durable form: early KMS + `initcall_blacklist=simpledrm_platform_driver_init`
-  (under test); then make `install/hardware/n1x.sh` firmware-aware.
+- [x] Durable form verified: early KMS + `initcall_blacklist=simpledrm_platform_driver_init`,
+  single DRM device, unattended reboot (2026-09-11 10:41). `n1x.sh` is now
+  firmware-aware (>= 1.0.0 GPU path, 0.x blacklist).
+- [ ] Rebuild the quattro ISO (build 5) with the firmware-aware runtime and the
+  live `i2c_mt65xx` module; install and validate end to end.
 - [x] Interim desktop: NVIDIA stack blacklisted on the target, Hyprland renders
   in software on simpledrm with working internal keyboard/touchpad (recovery5
   install, 2026-09-03 20:50).
