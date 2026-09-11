@@ -98,6 +98,33 @@ investigation toward that common boundary. A raw-kernel GRUB installation on
 disk is the leading fallback because it would deliberately reproduce the USB
 boot mechanism that is already known to work.
 
+## BIOS 1.0.4 changes the GPU picture (2026-09-11)
+
+The user updated the laptop firmware from 0.60.1 to **1.0.4 (2026-08-28)**.
+On the recovery5 install (normal entry, NVIDIA blacklist lifted):
+
+- The 610.57.04 open driver now initializes the GPU: no FWSEC/COT timeout,
+  no `RmInitAdapter` failure; `nvidia-smi` reports "NVIDIA RTX Spark N1X
+  (5120-core Blackwell RTX GPU)"; `/dev/dri/card1` + `renderD128` appear and
+  Hyprland starts. With the old `nvidia_drm modeset=0` the panel stayed black
+  (nothing drives the display once the driver has reset it); switching to
+  `modeset=1 fbdev=1` is the next test.
+- The embedded controller is unchanged: `ARML0002`, FFH offset 2, ACPI
+  errors persist. The DSDT shrank (337 KB -> 254 KB) but the EC binding did
+  not change.
+- Consequence for the port: `install/hardware/n1x.sh` must stop blacklisting
+  the NVIDIA stack on firmware >= 1.0.x and instead follow the normal NVIDIA
+  path (modeset=1); keep the blacklist only for the pre-release 0.x firmware.
+- Boot convenience on the dev unit: LUKS key slot 1 holds
+  `/etc/omarchy/auto-unlock.key`, embedded in both UKIs with
+  `cryptkey=rootfs:...` on both entries (`00-omarchy-auto-unlock.conf` drop-in
+  plus the rescue line in `/etc/default/limine`). Reboots are unattended.
+  This defeats disk encryption on that unit by design. BOOT_ORDER in
+  `/etc/default/limine` now lists `linux-n1x` first (the recovery5 installer
+  had copied the drop-in's rescue-first order there, so drop-ins cannot
+  override it). Lesson: `printf pw | sudo -S cmd --key-file=-` feeds the
+  password pipe to the command; pass secrets through a root-only file.
+
 ## Quattro port (started 2026-09-03 evening)
 
 The user chose to re-base the N1x work onto the `quattro` branches of both

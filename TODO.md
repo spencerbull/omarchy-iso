@@ -68,9 +68,10 @@
   (`7.0.14-2-n1x`), installed on the target with `pacman -U`, rescue UKI
   rebuilt by hand (2026-09-03 16:51).
 - [x] Reboot into `linux-n1x`: internal keyboard and touchpad now work.
-- [ ] NVIDIA GSP boot fails on 610.57.04 (`FWSEC timed out processing COT
-  command`). Untested: Spark's cmdline knobs, the 580 driver. Never FLR the GPU
-  (hangs the SoC).
+- [x] NVIDIA GSP boot: fixed by BIOS 1.0.4 (2026-09-11); 610.57.04 initializes
+  the GPU and `nvidia-smi` works. Never FLR the GPU (hangs the SoC).
+- [ ] Panel on NVIDIA KMS (`nvidia_drm modeset=1 fbdev=1`) under test; then make
+  `install/hardware/n1x.sh` firmware-aware (blacklist only on 0.x BIOS).
 - [x] Interim desktop: NVIDIA stack blacklisted on the target, Hyprland renders
   in software on simpledrm with working internal keyboard/touchpad (recovery5
   install, 2026-09-03 20:50).
