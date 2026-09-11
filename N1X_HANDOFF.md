@@ -140,6 +140,30 @@ On the recovery5 install (normal entry, NVIDIA blacklist lifted):
   override it). Lesson: `printf pw | sudo -S cmd --key-file=-` feeds the
   password pipe to the command; pass secrets through a root-only file.
 
+## Branch layout after the 2026-09-11 re-base (current)
+
+The user renamed the fork branches to an `nv-` prefix and asked for the work
+to sit on the latest upstream lines, with 4.0.3 as the stable runtime.
+
+| Repo | Fork branch | Base | Worktree |
+| --- | --- | --- | --- |
+| omarchy-iso | `spencerbull/omarchy-iso` `nv-quattro` | `omacom-io/omarchy-iso` `quattro` @ `a23f8d4` (13 commits on top) | `/home/sbull/omarchy-repos/omarchy-iso-n1x-quattro` |
+| omarchy (runtime) | `spencerbull/omarchy` `nv-v4-0-3` (stable, used for ISO builds) | `omacom/omarchy` `v4-0-3` @ `05349870` (2 commits on top) | `/home/sbull/omarchy-repos/omarchy-nv-v4-0-3` |
+| omarchy (runtime) | `spencerbull/omarchy` `nv-quattro` (tracking dev) | `omacom/omarchy` `quattro` @ `b5589faa` (same 2 commits) | `/home/sbull/omarchy-repos/omarchy-n1x-quattro` |
+| omarchy-pkgs | `spencerbull/omarchy-pkgs` `nv-master` | `omacom-io/omarchy-pkgs` `master` @ `c31ef46` (1 commit: linux-n1x + Canonical keys) | `/home/sbull/omarchy-repos/omarchy-pkgs-nv-master` |
+
+Upstream omarchy-pkgs master already merged its own aarch64 build support and
+the 1.38.0 Limine hook with aarch64, so only `pkgbuilds/linux-n1x` and the
+signing keys are carried. The old `linux-gb10` branch (with the aarch64
+recipes for mise, nvim, obsidian, obs-studio, dotnet, qemu, pinta, spotify
+that upstream no longer keeps as PKGBUILDs) is preserved on the fork as the
+source of the prebuilt bundle. Upstream's `v4.0.3` tag lives on branch
+`v4-0-3`, not on `quattro` (356 commits apart); both have the same hardware
+and provisioning layout, so the N1x commits apply to either.
+
+The ISO build for the stable line uses:
+`--local-source /path/to/omarchy-nv-v4-0-3 /path/to/omarchy-pkgs-nv-master`.
+
 ## Quattro port (started 2026-09-03 evening)
 
 The user chose to re-base the N1x work onto the `quattro` branches of both
