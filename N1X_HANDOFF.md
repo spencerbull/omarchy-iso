@@ -109,6 +109,16 @@ On the recovery5 install (normal entry, NVIDIA blacklist lifted):
   Hyprland starts. With the old `nvidia_drm modeset=0` the panel stayed black
   (nothing drives the display once the driver has reset it); switching to
   `modeset=1 fbdev=1` is the next test.
+- **Panel on the GPU (2026-09-11 10:39).** With `nvidia_drm modeset=1
+  fbdev=1`, nvidia-drm detects the internal panel (`eDP-1`, LG Display
+  0x07C7) and takes fb0. Hyprland then saw two GPUs (leftover simpledrm
+  `card0` plus nvidia `card1`), left eDP-1 modeless and failed buffer
+  allocation; restricting Aquamarine with `AQ_DRM_DEVICES=/dev/dri/card1`
+  gave a working desktop at 1920x1200@120 on the panel. The durable form
+  under test: early KMS (`MODULES+=(nvidia nvidia_modeset nvidia_uvm
+  nvidia_drm)`) plus `initcall_blacklist=simpledrm_platform_driver_init` on
+  the normal entry, as NVIDIA ships on the Spark, so only one DRM device
+  exists and no environment override is needed.
 - The embedded controller is unchanged: `ARML0002`, FFH offset 2, ACPI
   errors persist. The DSDT shrank (337 KB -> 254 KB) but the EC binding did
   not change.

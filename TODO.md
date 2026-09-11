@@ -70,8 +70,10 @@
 - [x] Reboot into `linux-n1x`: internal keyboard and touchpad now work.
 - [x] NVIDIA GSP boot: fixed by BIOS 1.0.4 (2026-09-11); 610.57.04 initializes
   the GPU and `nvidia-smi` works. Never FLR the GPU (hangs the SoC).
-- [ ] Panel on NVIDIA KMS (`nvidia_drm modeset=1 fbdev=1`) under test; then make
-  `install/hardware/n1x.sh` firmware-aware (blacklist only on 0.x BIOS).
+- [x] Panel on NVIDIA KMS: desktop at 1920x1200@120 on eDP-1 (2026-09-11 10:39)
+  once Aquamarine is limited to the NVIDIA device.
+- [ ] Durable form: early KMS + `initcall_blacklist=simpledrm_platform_driver_init`
+  (under test); then make `install/hardware/n1x.sh` firmware-aware.
 - [x] Interim desktop: NVIDIA stack blacklisted on the target, Hyprland renders
   in software on simpledrm with working internal keyboard/touchpad (recovery5
   install, 2026-09-03 20:50).
