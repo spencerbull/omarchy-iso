@@ -137,6 +137,15 @@
   `hyprland` needs `libaquamarine.so=13` while its `aquamarine` moved on; fix
   is an aarch64 `hyprland` 0.56.2 built from omarchy-pkgs into the bundle plus
   `[omarchy]` first in `pacman-online-aarch64.conf` so bundle builds win.
+  Build 7 (bundle first) failed on gstreamer/frei0r because the bundle still
+  carried ~70 plain distro packages from 2026-09-03 that then shadowed Arch
+  Linux ARM. The bundle is now pruned to archives whose `.PKGINFO` pkgbase is
+  an omarchy-pkgs recipe (53 archives: kernel pair, hyprland 0.56.2-3, Limine
+  helpers, keyring, Omarchy apps, yaru-icon-theme, qemu-user-static pair); the
+  distro duplicates live in `package-bundle/obsolete/distro-dups/`. Lesson:
+  classify by pkgbase, not filename (split packages, recipe names like
+  `yaru-icon-theme` whose pkgbase is `yaru`). Builds 8 and 9 were killed for
+  those classification mistakes; build 10 is the first with the clean bundle.
   Build 4 succeeded (`omarchy-2026.09.04-aarch64-n1x-local.iso`,
   `c2f3620378507c971f20d1695a034f78853fc19477eb921b077684f15dfd5d90`);
   omarchy-dev is complete. Physical install test pending.
