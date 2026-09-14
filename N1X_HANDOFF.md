@@ -146,7 +146,7 @@ On the recovery5 install (normal entry, NVIDIA blacklist lifted):
 /home/dell/omarchy-gb10-builds/n1x-quattro/iso/release/omarchy-2026.09.14-aarch64-n1x-local.iso
 size:   4,427,929,600 bytes
 sha256: 18458c9582e19446e1529837b3bcce8cea6cc4d7308f9ab92742114f1d91b5fc
-staged: /home/sbull/UNAS/omarchy-2026.09.14-aarch64-n1x-v403-quattro.iso and ~/Downloads
+staged: ~/Downloads/omarchy-2026.09.14-aarch64-n1x-quattro2.iso (UNAS was offline on 2026-09-14)
 log:    /home/dell/omarchy-gb10-builds/n1x-quattro/quattro-n1x-build11.log
 inputs: iso nv-quattro @ 337a363, omarchy nv-v4-0-3 @ 456bd11b, pkgs nv-master @ e0ed447,
         bundle 53 archives (recipe-built only; hyprland 0.56.2-3 built 2026-09-13)
