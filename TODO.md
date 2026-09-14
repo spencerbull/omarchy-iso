@@ -131,6 +131,12 @@
   pushed. Build 3's local makepkg printed `libfakeroot internal error: payload
   not recognized!` without failing; watch whether the built omarchy-dev is
   complete.
+  Build 5 (2026-09-11, new nv- bases) died on `broadcom-wl-dkms`: upstream's
+  new rename mapping runs before the aarch64 filter, which only knew the old
+  name (fixed). Build 6 died on Arch Linux ARM's own inconsistency: its
+  `hyprland` needs `libaquamarine.so=13` while its `aquamarine` moved on; fix
+  is an aarch64 `hyprland` 0.56.2 built from omarchy-pkgs into the bundle plus
+  `[omarchy]` first in `pacman-online-aarch64.conf` so bundle builds win.
   Build 4 succeeded (`omarchy-2026.09.04-aarch64-n1x-local.iso`,
   `c2f3620378507c971f20d1695a034f78853fc19477eb921b077684f15dfd5d90`);
   omarchy-dev is complete. Physical install test pending.
