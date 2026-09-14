@@ -75,8 +75,10 @@
 - [x] Durable form verified: early KMS + `initcall_blacklist=simpledrm_platform_driver_init`,
   single DRM device, unattended reboot (2026-09-11 10:41). `n1x.sh` is now
   firmware-aware (>= 1.0.0 GPU path, 0.x blacklist).
-- [ ] Rebuild the quattro ISO (build 5) with the firmware-aware runtime and the
-  live `i2c_mt65xx` module; install and validate end to end.
+- [x] Build 11: quattro-flow ISO on the 4.0.3 runtime with the firmware-aware
+  N1x policy (`18458c9582e19446e1529837b3bcce8cea6cc4d7308f9ab92742114f1d91b5fc`).
+- [ ] Install build 11 on the laptop and validate end to end (GPU desktop,
+  keyboard, touchpad, unattended boot is not part of the image).
 - [x] Interim desktop: NVIDIA stack blacklisted on the target, Hyprland renders
   in software on simpledrm with working internal keyboard/touchpad (recovery5
   install, 2026-09-03 20:50).

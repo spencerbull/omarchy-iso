@@ -140,6 +140,24 @@ On the recovery5 install (normal entry, NVIDIA blacklist lifted):
   override it). Lesson: `printf pw | sudo -S cmd --key-file=-` feeds the
   password pipe to the command; pass secrets through a root-only file.
 
+## Current image: build 11 (2026-09-13 22:47), quattro flow on the 4.0.3 runtime
+
+```text
+/home/dell/omarchy-gb10-builds/n1x-quattro/iso/release/omarchy-2026.09.14-aarch64-n1x-local.iso
+size:   4,427,929,600 bytes
+sha256: 18458c9582e19446e1529837b3bcce8cea6cc4d7308f9ab92742114f1d91b5fc
+staged: /home/sbull/UNAS/omarchy-2026.09.14-aarch64-n1x-v403-quattro.iso and ~/Downloads
+log:    /home/dell/omarchy-gb10-builds/n1x-quattro/quattro-n1x-build11.log
+inputs: iso nv-quattro @ 337a363, omarchy nv-v4-0-3 @ 456bd11b, pkgs nv-master @ e0ed447,
+        bundle 53 archives (recipe-built only; hyprland 0.56.2-3 built 2026-09-13)
+```
+
+Builds 5-10 on the nv- bases each removed one blocker (broadcom-wl-dkms
+mapping, Arch Linux ARM's hyprland/aquamarine soname mismatch, distro
+duplicates in the bundle shadowing current packages, split-package
+classification, asdcontrol). Later commits (parallel make/compression in the
+local package step, kernel job cap removed) are pushed but not in this image.
+
 ## Branch layout after the 2026-09-11 re-base (current)
 
 The user renamed the fork branches to an `nv-` prefix and asked for the work
