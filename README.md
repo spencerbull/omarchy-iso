@@ -1,3 +1,5 @@
+> N1X development branch: see [N1X.md](N1X.md) for the matching repositories, build instructions, and hardware status.
+
 # Omarchy ISO
 
 The Omarchy ISO streamlines [the installation of Omarchy](https://learn.omacom.io/2/the-omarchy-manual/50/getting-started). It includes the Omarchy Configurator as a front-end to archinstall and automatically launches the [Omarchy Installer](https://github.com/basecamp/omarchy) after base arch has been setup.

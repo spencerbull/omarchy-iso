@@ -6,7 +6,7 @@ limine_function_uses_supported_arch() {
       in_function = 1
       next
     }
-    in_function && /is_supported_uefi_arch/ {
+    in_function && /is_supported_arch/ {
       supports_arch = 1
     }
     in_function && /^}/ {

@@ -37,10 +37,10 @@ if select_node_release linux-arm64 <<<"$node_manifest"$'\ndddd  node-v25.0.0-lin
 fi
 
 source "$repo_root/builder/limine-hook.sh"
-limine_functions=$'reset_enroll_config() {\n\tis_supported_uefi_arch || return 0\n}\n\nenroll_config() {\n\tis_supported_uefi_arch || return 0\n}'
+limine_functions=$'reset_enroll_config() {\n\tis_supported_arch || return 0\n}\n\nenroll_config() {\n\tis_supported_arch || return 0\n}'
 limine_function_uses_supported_arch reset_enroll_config <<<"$limine_functions"
 limine_function_uses_supported_arch enroll_config <<<"$limine_functions"
-missing_enroll_support=$'reset_enroll_config() {\n\tis_supported_uefi_arch || return 0\n}\n\nenroll_config() {\n\tis_x64 || return 0\n}'
+missing_enroll_support=$'reset_enroll_config() {\n\tis_supported_arch || return 0\n}\n\nenroll_config() {\n\tis_x64 || return 0\n}'
 if limine_function_uses_supported_arch enroll_config <<<"$missing_enroll_support"; then
   echo "Limine hook validation unexpectedly accepted missing AArch64 enrollment" >&2
   exit 1
@@ -52,24 +52,35 @@ filter_archiso_aarch64_grub_modules grub_modules
 [[ ${grub_modules[*]} == 'all_video boot linux video' ]]
 
 source "$repo_root/builder/archiso-aarch64-mkinitcpio.sh"
-printf '%s\n' 'HOOKS=(base udev microcode modconf kms memdisk archiso filesystems keyboard)' >"$fixture/archiso.conf"
+early_input_modules='MODULES=(i2c_tegra i2c_hid i2c_hid_acpi hid_generic hid_multitouch)'
+printf '%s\n' 'HOOKS=(base udev microcode modconf kms memdisk archiso plymouth filesystems keyboard)' >"$fixture/archiso.conf"
 configure_archiso_aarch64_mkinitcpio "$fixture/archiso.conf"
-[[ $(<"$fixture/archiso.conf") == 'HOOKS=(base udev modconf kms archiso filesystems keyboard)' ]]
-printf '%s\n' 'HOOKS=(microcode base udev modconf kms archiso filesystems keyboard memdisk)' >"$fixture/boundary-archiso.conf"
+[[ $(<"$fixture/archiso.conf") == $'HOOKS=(base udev modconf kms archiso filesystems keyboard)\n'"$early_input_modules" ]]
+printf '%s\n' 'HOOKS=(microcode base udev plymouth modconf kms archiso filesystems keyboard memdisk)' >"$fixture/boundary-archiso.conf"
 configure_archiso_aarch64_mkinitcpio "$fixture/boundary-archiso.conf"
-[[ $(<"$fixture/boundary-archiso.conf") == 'HOOKS=(base udev modconf kms archiso filesystems keyboard)' ]]
+[[ $(<"$fixture/boundary-archiso.conf") == $'HOOKS=(base udev modconf kms archiso filesystems keyboard)\n'"$early_input_modules" ]]
 printf '%s\n' 'HOOKS=(base udev modconf kms archiso filesystems keyboard)' >"$fixture/unexpected-archiso.conf"
 if configure_archiso_aarch64_mkinitcpio "$fixture/unexpected-archiso.conf" >/dev/null 2>&1; then
   echo "AArch64 mkinitcpio overlay unexpectedly accepted a drifted hook layout" >&2
   exit 1
 fi
-printf '%s\n' 'HOOKS=(base udev microcode microcode modconf kms memdisk archiso filesystems keyboard)' >"$fixture/duplicate-archiso.conf"
+printf '%s\n' 'HOOKS=(base udev microcode microcode modconf kms memdisk archiso plymouth filesystems keyboard)' >"$fixture/duplicate-archiso.conf"
 duplicate_hooks_before=$(<"$fixture/duplicate-archiso.conf")
 if configure_archiso_aarch64_mkinitcpio "$fixture/duplicate-archiso.conf" >/dev/null 2>&1; then
   echo "AArch64 mkinitcpio overlay unexpectedly accepted duplicate x86-only hooks" >&2
   exit 1
 fi
 [[ $(<"$fixture/duplicate-archiso.conf") == "$duplicate_hooks_before" ]]
+printf '%s\n' \
+  'MODULES=(usbhid)' \
+  'HOOKS=(base udev microcode modconf kms memdisk archiso plymouth filesystems keyboard)' \
+  >"$fixture/unexpected-modules-archiso.conf"
+unexpected_modules_before=$(<"$fixture/unexpected-modules-archiso.conf")
+if configure_archiso_aarch64_mkinitcpio "$fixture/unexpected-modules-archiso.conf" >/dev/null 2>&1; then
+  echo "AArch64 mkinitcpio overlay unexpectedly accepted an existing module assignment" >&2
+  exit 1
+fi
+[[ $(<"$fixture/unexpected-modules-archiso.conf") == "$unexpected_modules_before" ]]
 
 source "$repo_root/builder/arm64-kernel-image.sh"
 truncate -s 64 "$fixture/raw-arm64-image" "$fixture/efi-stub-arm64-image" "$fixture/invalid-efi-image"
@@ -107,15 +118,59 @@ remaining_sources=0
 [[ -e $fixture/second.iso ]] && ((remaining_sources += 1))
 [[ $remaining_sources == 1 ]]
 
+source "$repo_root/builder/grub-platform.sh"
+render_grub_config() {
+  local config=$1 platform=$2 kernel=$3 splash=$4 options=$5 output=$6
+
+  cp "$repo_root/configs/grub/$config" "$output"
+  configure_grub_platform "$output" "$platform"
+  sed -i \
+    -e "s|%KERNEL%|$kernel|g" \
+    -e "s|%BOOT_SPLASH_KERNEL_OPTIONS%|$splash|g" \
+    -e "s|%KERNEL_OPTIONS%|$options|g" \
+    "$output"
+}
+
 for config in grub.cfg loopback.cfg; do
-  sed \
-    -e 's|%KERNEL%|linux-gb10|g' \
-    -e 's|%KERNEL_OPTIONS%||g' \
-    "$repo_root/configs/grub/$config" > "$fixture/$config"
+  render_grub_config "$config" gb10 linux-gb10 '' plymouth.enable=0 "$fixture/$config"
   grep -Fq 'vmlinuz-linux-gb10' "$fixture/$config"
   grep -Fq 'initramfs-linux-gb10.img' "$fixture/$config"
+  [[ $(grep -Fc 'plymouth.enable=0' "$fixture/$config") == 2 ]]
+  grep -Fxq 'default=archlinux' "$fixture/$config"
+  grep -Fxq 'timeout=0' "$fixture/$config"
+  if grep -Fq 'n1x-recovery' "$fixture/$config"; then
+    echo "rendered GB10 config unexpectedly contains the N1x recovery entry in $config" >&2
+    exit 1
+  fi
+  if grep -E '^[[:space:]]*linux .* (quiet|splash)( |$)' "$fixture/$config" >/dev/null; then
+    echo "rendered GB10 config unexpectedly enables a quiet Plymouth boot in $config" >&2
+    exit 1
+  fi
   if grep -Fq 'linux-t2' "$fixture/$config"; then
     echo "unexpected T2 kernel in rendered GB10 $config" >&2
+    exit 1
+  fi
+
+  render_grub_config "$config" n1x linux-n1x '' plymouth.enable=0 "$fixture/n1x-$config"
+  grep -Fq 'vmlinuz-linux-n1x' "$fixture/n1x-$config"
+  grep -Fq 'initramfs-linux-n1x.img' "$fixture/n1x-$config"
+  [[ $(grep -Fc 'plymouth.enable=0' "$fixture/n1x-$config") == 3 ]]
+  grep -Fxq 'default=n1x-recovery' "$fixture/n1x-$config"
+  grep -Fxq 'timeout=-1' "$fixture/n1x-$config"
+  grep -Fq -- "--id 'n1x-recovery'" "$fixture/n1x-$config"
+  grep -Fq 'omarchy.n1x_recovery=1' "$fixture/n1x-$config"
+  grep -Fq 'nomodeset module_blacklist=nvidia,nvidia_drm,nvidia_modeset,nvidia_uvm,nvidia_peermem,nouveau' "$fixture/n1x-$config"
+  grep -Fq 'console=tty0 fbcon=map:0 earlycon' "$fixture/n1x-$config"
+
+  render_grub_config "$config" '' linux-t2 'quiet splash ' xe.enable_panel_replay=0 "$fixture/x86-$config"
+  grep -F 'quiet splash xe.enable_panel_replay=0' "$fixture/x86-$config" >/dev/null
+  grep -Fxq 'default=archlinux' "$fixture/x86-$config"
+  if grep -Fq 'n1x-recovery' "$fixture/x86-$config"; then
+    echo "rendered x86 config unexpectedly contains the N1x recovery entry in $config" >&2
+    exit 1
+  fi
+  if grep -Fq 'plymouth.enable=0' "$fixture/x86-$config"; then
+    echo "rendered x86 entry unexpectedly disables Plymouth in $config" >&2
     exit 1
   fi
 done
@@ -125,6 +180,18 @@ if "$repo_root/bin/omarchy-iso-make" --gb10 >"$fixture/missing-package-dir.log" 
   exit 1
 fi
 grep -Fq -- '--gb10 requires --package-dir DIR' "$fixture/missing-package-dir.log"
+
+if "$repo_root/bin/omarchy-iso-make" --n1x >"$fixture/missing-n1x-package-dir.log" 2>&1; then
+  echo "--n1x unexpectedly accepted a missing --package-dir" >&2
+  exit 1
+fi
+grep -Fq -- '--n1x requires --package-dir DIR' "$fixture/missing-n1x-package-dir.log"
+
+if "$repo_root/bin/omarchy-iso-make" --gb10 --n1x >"$fixture/mixed-arm-platform.log" 2>&1; then
+  echo "mutually exclusive ARM image profiles were unexpectedly accepted" >&2
+  exit 1
+fi
+grep -Fq 'mutually exclusive' "$fixture/mixed-arm-platform.log"
 
 if "$repo_root/bin/omarchy-iso-make" --gb10 --quattro >"$fixture/quattro.log" 2>&1; then
   echo "--gb10 unexpectedly accepted the Quattro installer flow" >&2
@@ -161,6 +228,20 @@ if "$repo_root/bin/omarchy-iso-make" --gb10 --package-dir "$fixture/packages" >"
 fi
 grep -Fq 'SHA256SUMS does not cover linux-gb10-headers' "$fixture/incomplete-checksums.log"
 
+mkdir "$fixture/packages-n1x"
+if "$repo_root/bin/omarchy-iso-make" --n1x --package-dir "$fixture/packages-n1x" >"$fixture/missing-n1x-runtime.log" 2>&1; then
+  echo "--n1x unexpectedly accepted a package directory without a runtime archive" >&2
+  exit 1
+fi
+grep -Fq 'expected exactly one linux-n1x runtime archive' "$fixture/missing-n1x-runtime.log"
+
+touch "$fixture/packages-n1x/linux-n1x-7.0.14.nvidia1018-1-aarch64.pkg.tar.xz"
+if "$repo_root/bin/omarchy-iso-make" --n1x --package-dir "$fixture/packages-n1x" >"$fixture/missing-n1x-headers.log" 2>&1; then
+  echo "--n1x unexpectedly accepted a package directory without a headers archive" >&2
+  exit 1
+fi
+grep -Fq 'expected exactly one linux-n1x-headers archive' "$fixture/missing-n1x-headers.log"
+
 archinstall_fixture="$fixture/installer.py"
 cat > "$archinstall_fixture" <<'PY'
 for file in ('BOOTIA32.EFI', 'BOOTX64.EFI'):
@@ -189,28 +270,29 @@ grep -Fq '"$offline_mirror_dir"/*.pkg.tar.*' "$repo_root/builder/build-iso.sh"
 grep -Fq 'CONTAINER_IMAGE=menci/archlinuxarm@sha256:3e1074c407fc1a57c2a2117af6920c96a7cc906fa6f1f2da8a4a7fd3aa2c2f4e' "$repo_root/bin/omarchy-iso-make"
 grep -Fq 'CONTAINER_PLATFORM_ARGS=(--platform linux/arm64)' "$repo_root/bin/omarchy-iso-make"
 grep -Fq -- '-v "$PACKAGE_DIR:/packages:ro"' "$repo_root/bin/omarchy-iso-make"
-grep -Fq '.gb10-build.XXXXXX' "$repo_root/bin/omarchy-iso-make"
-grep -Fq 'explicit OMARCHY_INSTALLER_REPO and GB10 branch OMARCHY_INSTALLER_REF' "$repo_root/bin/omarchy-iso-make"
+grep -Fq '.${ARM_PLATFORM}-build.XXXXXX' "$repo_root/bin/omarchy-iso-make"
+grep -Fq 'explicit OMARCHY_INSTALLER_REPO and branch OMARCHY_INSTALLER_REF' "$repo_root/bin/omarchy-iso-make"
 grep -Fq 'http://mirror.archlinuxarm.org/aarch64/$repo' "$repo_root/configs/airootfs/root/configurator"
 grep -Fq 'pacman-key --populate archlinuxarm' "$repo_root/configs/airootfs/root/.automated_script.sh"
 grep -Fq 'magic at offset 56' "$repo_root/builder/build-iso.sh"
 grep -Fq 'edk2-shell' "$repo_root/builder/build-iso.sh"
 grep -Fq 'source /builder/gb10-omarchy-source.sh' "$repo_root/builder/build-iso.sh"
-grep -Fq 'validate_gb10_omarchy_source "$omarchy_source"' "$repo_root/builder/build-iso.sh"
-grep -Fq 'selected Omarchy source is not GB10-capable' "$source_contract"
+grep -Fq 'source /builder/grub-platform.sh' "$repo_root/builder/build-iso.sh"
+grep -Fq 'validate_arm_omarchy_source "$omarchy_source"' "$repo_root/builder/build-iso.sh"
+grep -Fq 'selected Omarchy source is not ARM-image-capable' "$source_contract"
 grep -Fq 'does not fail closed for unsupported GB10 lifecycle paths' "$source_contract"
 grep -Fq 'install/helpers/gb10-lifecycle.sh' "$source_contract"
 grep -Fq 'omarchy-guard-gb10-lifecycle .*\|\| exit 1' "$source_contract"
 grep -Fq 'cannot consume the bundled AArch64 Node.js release' "$source_contract"
 grep -Fq 'cannot remove the live ISO installer sudo policy on errors and signals' "$source_contract"
-grep -Fq 'gb10_guard_precedes_mutation' "$source_contract"
+grep -Fq 'arm_image_guard_precedes_mutation' "$source_contract"
 grep -Fq 'does not guard Limine finalization before mutation' "$source_contract"
 grep -Fq 'does not validate the installed AArch64 Limine deployment' "$source_contract"
 grep -Fq 'nvidia-open-dkms=610.57.04-1' "$source_contract"
 grep -Fq 'nvidia-utils=610.57.04-1' "$source_contract"
 grep -Fq 'usr/lib/firmware/nvidia/610.57.04/gsp_ga10x.bin' "$repo_root/builder/build-iso.sh"
 grep -Fq 'usr/lib/firmware/nvidia/610.57.04/ucodes_ga10x.bin' "$repo_root/builder/build-iso.sh"
-grep -Fq 'limine-mkinitcpio-hook=1.37.1-4' "$repo_root/builder/build-iso.sh"
+grep -Fq 'limine-mkinitcpio-hook=1.38.0-1' "$repo_root/builder/build-iso.sh"
 grep -Fq 'mkarchiso_command=/tmp/mkarchiso-aarch64' "$repo_root/builder/build-iso.sh"
 grep -Fq 'arch-install-scripts' "$repo_root/builder/build-iso.sh"
 grep -Fq 'archiso-v87-aarch64-grub.patch' "$repo_root/builder/build-iso.sh"
@@ -226,13 +308,40 @@ if patch --batch --forward --fuzz=0 --dry-run "$fixture/drifted-mkarchiso" \
   echo "strict Archiso patch unexpectedly accepted changed GRUB module context" >&2
   exit 1
 fi
-grep -Fq 'patched AArch64 Limine hook' "$repo_root/builder/build-iso.sh"
-grep -Fq 'final GB10 offline repository must contain exactly one kernel and headers package' "$repo_root/builder/build-iso.sh"
+grep -Fq 'exactly one AArch64 Limine hook' "$repo_root/builder/build-iso.sh"
+grep -Fq 'final $OMARCHY_ARM_PLATFORM offline repository must contain exactly one kernel and headers package' "$repo_root/builder/build-iso.sh"
 grep -Fq 'does not enable AArch64 reset recovery' "$repo_root/builder/build-iso.sh"
 grep -Fq 'does not enable AArch64 config enrollment' "$repo_root/builder/build-iso.sh"
+grep -Fq 'cannot discover ARM kernels without pkgbase metadata' "$repo_root/builder/build-iso.sh"
 grep -Fq 'export OMARCHY_ISO_INSTALL=1' "$repo_root/configs/airootfs/root/.automated_script.sh"
+grep -Fq 'export OMARCHY_ARM_IMAGE_INSTALL=1' "$repo_root/configs/airootfs/root/.automated_script.sh"
+grep -Fq 'export OMARCHY_ARM_PLATFORM="$(cat /root/omarchy_arm_platform)"' "$repo_root/configs/airootfs/root/.automated_script.sh"
+grep -Fq 'export OMARCHY_INSTALL_DEBUG_LOGS=1' "$repo_root/configs/airootfs/root/.automated_script.sh"
+grep -Fq 'n1x_live_recovery_requested' "$repo_root/configs/airootfs/root/.automated_script.sh"
+grep -Fq 'exec /bin/bash -l' "$repo_root/configs/airootfs/root/.automated_script.sh"
+grep -Fq 'ssh root@omarchy-n1x-rescue.local' "$repo_root/configs/airootfs/usr/local/sbin/omarchy-n1x-live-probe"
+grep -Fq '["/root/.ssh"]="0:0:700"' "$repo_root/configs/profiledef.sh"
+grep -Fq '["/root/.ssh/authorized_keys"]="0:0:600"' "$repo_root/configs/profiledef.sh"
+ssh-keygen -l -f "$repo_root/builder/n1x-recovery-authorized-key" >/dev/null
+grep -Fq 'install -m0600 /builder/n1x-recovery-authorized-key' "$repo_root/builder/build-iso.sh"
+grep -Fq 'install -Dm0644 /builder/n1x-recovery-sshd.conf' "$repo_root/builder/build-iso.sh"
+grep -Fxq 'PasswordAuthentication no' "$repo_root/builder/n1x-recovery-sshd.conf"
+grep -Fxq 'PermitRootLogin prohibit-password' "$repo_root/builder/n1x-recovery-sshd.conf"
+grep -Fq 'omarchy-n1x-rescue >"$build_cache_dir/airootfs/etc/hostname"' "$repo_root/builder/build-iso.sh"
+grep -Fq 'OMARCHY_ARM_IMAGE_INSTALL="${OMARCHY_ARM_IMAGE_INSTALL:-0}"' "$repo_root/configs/airootfs/root/.automated_script.sh"
+grep -Fq 'OMARCHY_ARM_PLATFORM="${OMARCHY_ARM_PLATFORM:-}"' "$repo_root/configs/airootfs/root/.automated_script.sh"
+grep -Fq 'OMARCHY_INSTALL_DEBUG_LOGS="${OMARCHY_INSTALL_DEBUG_LOGS:-0}"' "$repo_root/configs/airootfs/root/.automated_script.sh"
+grep -Fq 'OMARCHY_ARM_IMAGE_INSTALL' "$repo_root/configs/airootfs/root/configurator"
+if grep -Fq 'omarchy_is_gb10 /sys' "$repo_root/configs/airootfs/root/configurator"; then
+  echo "AArch64 configurator unexpectedly requires the Coleman GB10 hardware tuple" >&2
+  exit 1
+fi
+grep -Fq 'OMARCHY_ARM_IMAGE_INSTALL' "$repo_root/builder/gb10-omarchy-source.sh"
+grep -Fq 'OMARCHY_INSTALL_DEBUG_LOGS' "$repo_root/builder/gb10-omarchy-source.sh"
 
 grep -Fq "ALL_kver='/boot/vmlinuz-linux-gb10'" "$repo_root/builder/linux-gb10.preset"
 grep -Fq "archiso_image='/boot/initramfs-linux-gb10.img'" "$repo_root/builder/linux-gb10.preset"
+grep -Fq "ALL_kver='/boot/vmlinuz-linux-n1x'" "$repo_root/builder/linux-n1x.preset"
+grep -Fq "archiso_image='/boot/initramfs-linux-n1x.img'" "$repo_root/builder/linux-n1x.preset"
 
 echo "GB10 build mode tests passed"
