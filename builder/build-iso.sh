@@ -405,6 +405,8 @@ if [[ $OMARCHY_ARCH == aarch64 ]]; then
     done
   )
   all_packages+=("$OMARCHY_KERNEL" "$OMARCHY_KERNEL-headers" "${platform_packages[@]}" archlinuxarm-keyring nvidia-open-dkms nvidia-utils libva-nvidia-driver limine limine-mkinitcpio-hook limine-snapper-sync snapper pciutils)
+  # GB10 setup installs these from the offline mirror after hardware detection.
+  all_packages+=(fwupd rdma-core ethtool nvme-cli smartmontools)
   mapfile -t all_packages < <(printf '%s\n' "${all_packages[@]}" | sort -u)
 fi
 
