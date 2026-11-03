@@ -8,8 +8,8 @@ Allowed: scoped code changes, tests, internal omabot review/fix loop, branch pus
 
 - [x] Add opt-in OEM build, retain boot logo/dashboard, automatically select the sole internal disk, use existing encrypted deferred-owner setup and successful-install reboot.
 - [x] Run the full VM-free suite and omabot internal review; fix and recheck findings before building.
-- [ ] Build x86_64 OEM ISO and verify zero-keystroke installation and first-boot owner setup in a disposable VM.
-- [ ] Push `oem-iso`, publish ISO/checksum through Tailshare, report the link.
+- [x] Build x86_64 OEM ISO and verify zero-keystroke installation and first-boot owner setup in a disposable VM.
+- [x] Push `oem-iso`, publish ISO/checksum through Tailshare, report the link.
 
 Disk policy: exactly one writable, unmounted, non-removable, non-hotplug internal disk of at least 32 GiB. Ambiguous or missing targets halt without a prompt or disk writes. Defaults are encrypted storage, US keyboard, English, UTC, hostname `omarchy`; the owner completes setup at first boot.
 
@@ -20,3 +20,22 @@ Verification so far: shell syntax and `git diff --check` pass; `./test/all` pass
 Review round 1 (Codex XHigh via omabot) checked configuration, credentials/key injection, dashboard success/failure and naming; identified an eMMC ambiguity defect after the earlier mounted-tree and network-device fixes. Added MMC transport/card-type handling, SD exclusion and fail-closed unknown MMC metadata; the eMMC regression fails when its fix is removed. Focused omabot round 2 is reviewing the final selector. Reviewer reports: `/tmp/oem-iso-review/reports/`. Runtime verifier container `omarchy-oem-verifier` is ready; verifier script `/tmp/oem-iso-review/verify-oem.py` sends zero keys and attaches no network or cidata. User confirmed publication through the existing `https://taker.trout-rooster.ts.net` address.
 
 Code gate passed: omabot round 2 (Codex XHigh) reported no actionable findings and cleared the ISO build. The primary agent ran all 392 Python tests (three skips), every shell test, shell syntax and whitespace checks on the final code. The reviewer independently checked mounted ancestry, local-storage filtering, MMC/SD classification and eMMC/NVMe ambiguity; three filesystem-backed MMC tests were blocked in its read-only sandbox, so it verified equivalent cases in memory. Those filesystem-backed tests passed in the primary agent’s full suite.
+
+Publication: `oem-iso` code commit `d34a53adfab8c1b91d56f1e867c8fcd1e8ab2a82` is published at `https://github.com/spencerbull/omarchy-iso/tree/oem-iso`; upstream `omacom/omarchy-iso` denied this account write access. The existing personal fork accepted the branch over SSH (HTTPS OAuth lacked workflow scope for the newer quattro history). No pull request opened and nothing merged.
+
+Build: stable-runtime attempt stopped because its published runtime lacks `install/provisioning/progress-icon.sh`, required by current quattro. Building with `--oem --edge --keep-pkg-cache --no-boot-offer` instead, whose runtime tracks quattro. The first edge attempt refused a stale shared-cache omarchy-keyring archive; pacman removed it, and a fresh verified edge copy succeeded on the next attempt. Evidence is under `test-runs/oem-iso-evidence/`, including both failed build logs.
+
+ISO built successfully with the edge runtime: `release/omarchy-oem-2026.11.03-x86_64-edge.iso` (6.3 GiB). Both live initramfs files passed the 128 MiB size gate (99,100,666 and 95,395,449 bytes). Now testing the exact ISO in an unprivileged, network-isolated QEMU verifier container with only `/dev/kvm` passed through; target storage is disposable qcow2 files.
+
+Final runtime verification passed on the exact published ISO, offline and without cidata or any key injection: UEFI reached owner setup after 46.8 seconds; BIOS reached it after 41.9 seconds. QMP recorded guest-requested resets. Both targets have encrypted LUKS root partitions (GPT on UEFI, MBR on BIOS). The two-internal-disk test halted at selection, and qemu-img compared both complete disks equal to newly created blank disks. Visual inspection confirmed the existing progress logo and the owner setup greeter. Evidence: `test-runs/oem-iso-evidence/{uefi,bios,multi-uefi}/result.json`, screenshots, QMP events and driver logs.
+
+Verifier infrastructure: the initial minimal QEMU image lacked virtio-vga; adding its display module exposed a QEMU initialization SIGSEGV (core stack includes hw-display-virtio-vga.so). A standard VGA probe worked, so the successful tests used standard VGA. The crash-diagnosis skill was used to inspect the crash facts; no host application/settings were changed. The storage probe handles both GPT and BIOS MBR. All test VM containers exited and were removed; verifier images and local evidence are retained for reproduction.
+
+Published files: `/home/sbull/.local/share/omarchy-iso/public/oem-iso/`, with the original durable copy under `/home/sbull/.local/share/omarchy-iso/oem/d34a53a/`. User service `omarchy-oem-tailshare.service` serves only the publication directory on 127.0.0.1:8765 through the existing Tailscale HTTPS proxy. Direct Tailscale file serving required root, so the existing proxy was used; before/after Tailscale route JSON is identical. The service stays running for downloads (stop with `systemctl --user stop omarchy-oem-tailshare.service`; it is transient and does not survive a host reboot).
+
+ISO: `https://taker.trout-rooster.ts.net/oem-iso/omarchy-oem-2026.11.03-x86_64-edge.iso`
+Checksum: `https://taker.trout-rooster.ts.net/oem-iso/omarchy-oem-2026.11.03-x86_64-edge.iso.sha256`
+Manifest: `https://taker.trout-rooster.ts.net/oem-iso/manifest.json`
+Size: 6,690,965,504 bytes. SHA-256: `75bd3f78391ccfff7f0b76b06594e14c99268514a9c1b252a44240f925635028`. A full streamed HTTPS download matched that hash; the checksum and manifest URLs also returned successfully.
+
+Done criteria are satisfied using the existing personal fork because upstream write access was denied. No merge or production deployment occurred. Physical hardware and aarch64 were not tested; this delivered ISO is x86_64. Firmware should prefer the installed disk over installation media to avoid reinstalling on the next boot.
