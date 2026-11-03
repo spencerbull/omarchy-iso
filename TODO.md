@@ -57,3 +57,30 @@ Follow-up passed: the regular build's real interactive harness completed languag
 Regular ISO: `release/omarchy-2026.11.03-x86_64-edge.iso`, SHA-256 `0465c20286e85bae22a368446d2e0d27321677267f6c88b2b6f3f1350ef86dfb`. Touchless SCSI recheck used the original published OEM ISO, SHA-256 unchanged at `75bd3f78391ccfff7f0b76b06594e14c99268514a9c1b252a44240f925635028`, and its installed root was independently confirmed as LUKS-encrypted. Test commands, environment, checksums and structured results are in `test-runs/oem-iso-regression/result.json`; raw logs/screenshots are beside it. The worker was an actual omabot Proxmox guest, with the ISO tests running in nested QEMU/KVM inside it. The nested target used UEFI and virtio-SCSI. Direct Proxmox CD-ROM attachment and the full desktop acceptance suite were not tested.
 
 Cleanup completed: omabot destroyed VM 9006 and both of its logical volumes; its firewall entry was removed. The final VM list matches the initial list, including the existing running VMs and stopped template/workers. No temporary worker remains. The private credential request was not used.
+
+## RC OEM build request
+
+User requested an RC OEM ISO with correct labeling and a Tailscale download. RC repository metadata identifies runtime/settings `4.5.0rc3-1`; the downloaded runtime matched its repository SHA-256. That runtime has deferred provisioning/setup-form but lacks the shared progress-icon.sh required by newer quattro. An isolated detached build worktree `/tmp/omarchy-oem-rc3-build` uses RC3's own ISO source `origin/release/v4-5-0-from-quattro` at `237b724`, with the reviewed OEM commit `d34a53a` cherry-picked as `444fa6a` and build metadata commit `ffd9c59`. Its RC-era dashboard contains the progress renderer directly. The main `oem-iso` product code is unchanged.
+
+Build inputs: `--oem --rc --keep-pkg-cache --no-boot-offer`, x86_64. Version `4.5.0rc3`, ISO volume label `OMARCHY_OEM_450RC3`, application `Omarchy 4.5.0rc3 OEM Installer`; final filename `omarchy-oem-4.5.0rc3-x86_64.iso`. A task-only docker adapter isolates the host package cache to avoid cross-channel archive conflicts. Tests and focused omabot RC-integration review precede the build; then verify the exact artifact on a fresh omabot Proxmox worker and publish without replacing the edge image. Evidence directory: `test-runs/oem-rc-evidence/`.
+
+- [x] Pass RC-source unit suite and omabot integration review.
+- [x] Build genuine RC3 OEM ISO with versioned filename and volume label.
+- [x] Verify automatic install/reboot/owner setup through omabot; collect evidence and remove worker.
+- [x] Publish RC ISO/checksum/manifest separately and verify the HTTPS download hash.
+
+RC source gate passed: full shell suite and 392 Python tests (three skips); omabot/Codex XHigh reviewed the RC-specific OEM port, inline progress compatibility, RC package selection, encryption/deferred setup, failure/success reboot paths and volume metadata, with no actionable findings. ISO build is in progress from clean detached commit `ffd9c59`.
+
+RC verification worker created through omabot: VM 9006, name `omabot-oem-rc3-verify-9006`, owner `oem-rc3-build`, creation stamp `1793746412`, 8 vCPUs / 16 GiB RAM. This is a fresh clone after the earlier regression worker was destroyed. Primary agent owns cleanup; existing VMs/template remain untouched.
+
+RC ISO built successfully (both live initramfs size gates passed). The initial 18-character disc label was valid ISO9660 but exceeded Joliet's 16-character limit. The final artifact uses `OMARCHY450RC3OEM` in both ISO9660 and Joliet, with filename `omarchy-oem-4.5.0rc3-x86_64.iso`. Native xorriso replay preserved BIOS/UEFI boot structures and the original filesystem UUID timestamps; the exact finalized image is being boot-tested in UEFI and BIOS on the omabot worker. Relabel command/log and verified descriptors are in the evidence directory.
+
+User explicitly requested the link while automated testing continues. The RC ISO, checksum and manifest are now published at `https://taker.trout-rooster.ts.net/oem-rc/omarchy-oem-4.5.0rc3-x86_64.iso`; the manifest marks boot/install tests in progress. HTTPS HEAD and checksum download passed. The edge image remains separately published and unchanged. RC SHA-256: `8eae968faba5288b664444c88747f1d15bc9ad0f27a73d40ed63bbebbdec18ae`.
+
+Final RC verification passed on the finalized, relabeled image: UEFI and BIOS each reached owner setup in 57.1 seconds with zero keys, no cidata and no network. Both used virtio-SCSI in nested KVM on the omabot Proxmox worker; QMP recorded guest-requested resets, and independent header probes confirmed encrypted LUKS roots (GPT/UEFI and MBR/BIOS). This does not claim direct Proxmox ISO attachment or physical hardware testing. Evidence, screenshots, boot events and result JSON were collected under `test-runs/oem-rc-evidence/worker-evidence/`. VM 9006, its two volumes and firewall entry were removed; existing VMs and the template remain unchanged.
+
+The public RC manifest now records passed automated tests. The complete HTTPS download matches SHA-256 `8eae968faba5288b664444c88747f1d15bc9ad0f27a73d40ed63bbebbdec18ae`. Final size is 6,537,871,360 bytes; ISO9660/Joliet labels both read `OMARCHY450RC3OEM`, application id `OMARCHY 4.5.0RC3 OEM INSTALLER`. The existing sharing user service remains running for the user's parallel installation test.
+
+RC ISO: `https://taker.trout-rooster.ts.net/oem-rc/omarchy-oem-4.5.0rc3-x86_64.iso`
+RC checksum: `https://taker.trout-rooster.ts.net/oem-rc/omarchy-oem-4.5.0rc3-x86_64.iso.sha256`
+RC manifest: `https://taker.trout-rooster.ts.net/oem-rc/manifest.json`
