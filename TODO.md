@@ -1,3 +1,48 @@
+# OEM first-boot UX parity
+
+Goal: the first boot of an OEM install (the owner's language, keyboard, account) looks and behaves like the ISO installer, with a one-command QEMU flow that installs an OEM ISO and drives first boot, with screenshots and a recording.
+
+Branches: omarchy-iso `t3/oem-first-boot-ux` (this worktree, the OEM commits rebased onto `origin/quattro` bb1e77c); omarchy `oem-first-boot-ux` at `/home/sbull/.t3/worktrees/omarchy/oem-first-boot-ux` from `origin/quattro` 60cb9bf30. Allowed: code and tests in both, ISO builds, disposable VMs, pushing branches, a PR on omarchy under the user's account. Not allowed without asking: merging, real disks, production deploys.
+
+Where it is decided: every first-boot screen is `bin/omarchy-provision-owner` in omarchy, on top of `install/provisioning/setup-form.sh` (prompts) and `progress-icon.sh` (progress), both vendored into the ISO by `builder/build-iso.sh`. The installer side is `configs/airootfs/root/configurator`, `usr/share/omarchy-iso/i18n.sh` and `console-font.py`.
+
+Gaps found (baseline evidence under `test-runs/omarchy-oem-baseline-*`):
+
+1. Font: installer sets patched Terminus (16 or 32 px); first boot picked among kbd's default8x16, sun12x22, latarcyrheb-sun32.
+2. gum key hints ("enter submit", "navigate") show at first boot; the installer turns them off in `.automated_script.sh`.
+3. Prompt and selection colours differ (purple in the installer, blue/red at first boot): cause not yet pinned, suspect the colour profile gum detects under the systemd unit.
+4. No language step at first boot; the form and the desktop stay English.
+5. Step order and review table differ (installer: language, keyboard, timezone, username, password, hostname; review lists language first).
+6. First-boot strings are hardcoded English, including progress tips.
+
+Plan:
+
+- [x] Rebase onto quattro; baseline OEM ISO and reference installer ISO built from edge.
+- [x] Harness: `bin/omarchy-iso-test --oem`, `--record`, `--resolution WxH`; first-boot driver follows whichever prompt is on screen.
+- [x] Baseline run green end to end; "before" screens and recording captured.
+- [x] omarchy: shared console font, language picker and review table in `setup-form.sh`, first boot in the installer's order, strings in `cli.json`, language applied through `/etc/omarchy/language`. Commit `Ask at first boot what the installer asks, on the installer's screens` on `oem-first-boot-ux`.
+- [x] Colour parity: the installer's login shell sets `COLORTERM=yes` (the live image's zsh setup), so gum sends 24-bit colours and the kernel settles them on the palette's purple; the first-boot unit has none. `setup-form.sh` now defaults it.
+- [x] ISO: vendor the runtime's console font when it ships one; OEM flow run from `--local-source` builds at 1280x800 and 2560x1600, the regular installer at both for side-by-side, and a hand-driven German first boot (form in German, `/etc/omarchy/language` and the owner's language `de`, `de_DE.utf8` generated, desktop in German).
+- [x] Review round 1: Codex xhigh on both diffs. Omarchy: four findings fixed (locale failure swallowed, stale language on retry, translation without Terminus, font size flipping near the threshold), one judgement call left (a portrait console under ~1300 px wide in the 32 px font wraps the logo, as it does in the installer). ISO: six fixed (timezone heading answered early, recorder reading the capabilities reply as a frame's, a blank OCR ending the progress wait, `--oem --free-space`, tests hiding errexit, stale vendored font file in a reused staging directory), three left as they are (base image name ignores `--oem` and resolution, the runtime font path ignores `OMARCHY_ISO_CONSOLE_FONT`, recording is best effort). Every fix has a test that fails without it.
+- [x] Review round 2 on the fixes: five more fixed (two unreadable screendumps read as setup finished, the 900 s cap overrun, a test assertion that hid errexit, a timing-fragile recorder test, a mock process leaked on failure); the font rule coming out a size smaller than the kernel's on a few unusual resolutions (2640x1080) is documented in its comment. Final runs of the reviewed build through the final harness: exit 0.
+- [x] PR on omarchy: https://github.com/omacom/omarchy/pull/18783 (branch `first-boot-setup-matches-installer` on omacom/omarchy, authored by spencerbull). Greptile's two findings on the first push (a caller's keyboard preset replaced by the language's; new tests belong in the area's existing file) are fixed in two follow-up commits and it now reports nothing open. A Codex pass on the preset follow-up found one low edge left as it is: with `OMARCHY_FORM_KEYBOARD_DEFAULT` exported empty into the unit, a retry in another language keeps the first language's layout preselected; nothing exports it. Copilot was requested and did not start.
+- [x] ISO branch pushed: `oem-first-boot-ux` on spencerbull/omarchy-iso. No upstream PR: it sits on the unmerged OEM commits.
+- [ ] Human gates: merge of the omarchy PR (its `test` check was still pending at hand-back); whether and how the OEM commits and this harness work go to omacom/omarchy-iso; installing QEMU on this host for native harness runs.
+
+Test results: omarchy-iso `LC_ALL=C ./test/all` passes (without `LC_ALL=C` this host's locale fails `nightly-test.sh` on sort order, on quattro too). Omarchy `./test/shell`: 421 of 424 files pass; `remote-session-service-test.sh`, `tray-symbolic-icon-test.sh` and `shell-idle-spawn-test.sh` fail on this host on a clean `origin/quattro` checkout as well.
+
+Workers (all T3 delegated tasks, Codex gpt-6.1-sol; none left running except where noted; nothing to clean up):
+
+- `First-boot setup shell tests` (high, task `cf56fb9d`): wrote and repaired tests under omarchy `test/shell.d/`. Done; its tests were rerun and later extended by the orchestrator.
+- `Review: Omarchy first-boot setup parity` (xhigh, task `88a95733`): read-only. Done; findings above.
+- `Review: ISO harness OEM mode and font vendoring` (xhigh, task `b3b26765`): read-only. Done; findings above.
+- `Re-review: fixes after first review (both repos)` (xhigh, task `23af3115`): read-only. Done; findings above.
+- `Review: keyboard preset follow-up (Omarchy)` (xhigh, task `a85c627c`): read-only. Done; finding above.
+
+Evidence: `~/.local/share/omarchy-iso/oem-first-boot-ux-evidence/` (a copy of `test-runs/oem-first-boot-ux/evidence/`, which is gitignored) holds before/after/installer screenshots at 1280x800 and 2560x1600, the German run, and the before and after recordings. ISOs in `release/`: `omarchy-oem-baseline` and `omarchy-reference` (edge, unchanged runtime), `omarchy-oem-first-boot-ux` (this branch plus the omarchy PR's head).
+
+Local tooling (not in either repo): `~/.local/share/omarchy-iso/qemu-test/{Dockerfile,run}` builds and runs the `omarchy-iso-qemu-test` image, which carries QEMU for this host (none installed, sudo needs a password). `run <checkout> <harness args>` is `bin/omarchy-iso-test` inside it with host networking. ISO builds take about seven minutes with the warm cache. A clean omarchy-pkgs worktree for `--local-source` is at `/home/sbull/.t3/worktrees/omarchy-pkgs-oem-first-boot-ux`.
+
 # OEM ISO
 
 Goal: deliver a zero-touch full-disk OEM ISO and Tailshare download link.
