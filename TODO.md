@@ -1,3 +1,47 @@
+# OEM bundle: branding, agreement and setup scripts
+
+Goal: an OEM ISO (`omarchy-iso-make --oem`) can be built with the OEM's own config (name, logo, tagline, colour, an optional agreement to accept) and a list of setup scripts; the install lays them down, first-boot owner setup opens on the OEM's branding and asks for the agreement as its last question; validated end to end in a VM with screenshots and a recording; one PR per repository, cross-referenced.
+
+Branches: omarchy-iso `t3/oem-bom-eula-scripts` (this worktree), on top of `fork/oem-first-boot-ux` (the unmerged OEM commits, themselves on `origin/quattro` bb1e77c); omarchy `oem-bom-eula` at `/home/sbull/.t3/worktrees/omarchy/oem-bom-eula` from `origin/quattro` 6baca275b. Allowed: code and tests in both, ISO builds, disposable VMs, pushing branches, opening the two PRs. Not allowed without asking: merging, real disks, production deploys.
+
+Where it is decided: the bundle is checked by `builder/oem-bundle.py` when `bin/omarchy-iso-make` starts and rides in the live image at `/usr/share/omarchy-iso/oem`; the orchestrator lays `oem.json`, `logo.txt` and `eula.txt` down in the target's `/etc/omarchy/oem` (`stage_provisioning_state`) and runs the scripts in the new system as the phase "Running OEM setup", before the boot checks and the factory snapshot. In omarchy, `install/provisioning/oem.sh` reads the bundle and draws the agreement for `bin/omarchy-provision-owner`, and `install/provisioning/console-font.py` draws a logo's braille dots into the console font.
+
+Decisions, the first five made without asking and the last two asked for mid-way:
+
+1. Delivery is build flags (`--oem-config FILE`, `--oem-script FILE`, repeatable), baked into the ISO, and only with `--oem`. A cidata drive does not carry a bundle.
+2. Scripts run at install time, as root in the new system, not at the owner's first boot: a failure stops the install at the factory, and what they change is in the factory snapshot.
+3. Branding is text: first boot runs on the Linux console (512-glyph Terminus, sixteen colours), so a logo is art of at most 81x12 and the build refuses anything the console cannot be made to draw. No SVG or bitmap there; `chafa` converts one, and the README gives the commands.
+4. The agreement is asked after the review and before anything is created; declining leaves the machine as shipped and offers to shut down. Acceptance is recorded in `/var/lib/omarchy/oem/eula-accepted.json`.
+5. The agreement is shown in the one language the OEM wrote it in.
+6. Asked for: the OEM's logo heads only the greeter and the agreement; the steps between are under Omarchy's.
+7. Asked for: a logo in braille dots, as the XPS screensaver on saber is drawn. The console font has none, so the runtime's font tool draws the patterns a logo uses into glyphs the screen's text leaves free, for as long as a branded screen is up.
+
+Plan:
+
+- [x] Read both ends; found the `--oem` work on `fork/oem-first-boot-ux` and based this on it.
+- [x] omarchy: `oem.sh` (bundle loader, agreement screen), wiring in `omarchy-provision-owner`, English strings, tests.
+- [x] omarchy-iso: `builder/oem-bundle.py`, build flags, live-image staging, orchestrator staging and script phase, dashboard band, harness `--oem-config`, tests, README, sample bundle in `test/unit/fixtures/oem/`.
+- [x] Mutation checks: every behaviour the tests claim was broken on purpose in a scratch copy and seen to fail; gaps found that way were closed.
+- [x] VM runs with the sample bundle: zero-touch install, first boot, agreement (read on, Ctrl+C and back, decline and back, accept), bundle and record compared on the installed system, both scripts' effects read back over SSH.
+- [x] Review round 1 (Codex xhigh, one task per repository). omarchy: three of four findings taken (a logo opening with dashes read by gum as an option; Ctrl+C between the agreement's screens ending setup; the key reader only ever stubbed in tests), one rejected (layout on consoles under about 12 rows, which no Linux console mode is). omarchy-iso: five fixed (validation not seeing a script remove the agreement; staging merging into an existing bundle; a script named like an option skipping its syntax check; a config path opening with a dash; the harness accepting a record for other terms), two already fixed by then.
+- [x] Brand placement and braille-dot logos (decisions 6 and 7), with an XPS bundle kept outside the repository.
+- [x] Review round 2 on that delta (Codex xhigh): three findings, all fixed (the art font outliving the greeter when setup fails to start; a resize showing the dots as other characters for a moment; blank braille cells not treated as spaces by the validator). The two greeter fixes have no test: the greeter has no seam for one.
+- [x] Final VM run on the ISO built from the reviewed heads: harness exit 0, the bundle and the record compared on the installed system, the script's effects read back over SSH.
+- [x] PRs, cross-referenced: omarchy https://github.com/omacom/omarchy/pull/18841 (branch `oem-branding-and-agreement`, one commit on quattro) and omarchy-iso https://github.com/spencerbull/omarchy-iso/pull/2 (branch `oem-bundle` against `oem-first-boot-ux`, on the fork because that base is not upstream).
+- [ ] Human gates: merging either PR; whether the OEM ISO work, this included, goes to omacom/omarchy-iso.
+
+Not run: a factory reset on an OEM install, aarch64, physical hardware, a resolution other than 1280x800, a first boot in a language other than English, and a plain `--oem` ISO with no bundle after the last change to the greeter.
+
+Workers (T3 delegated tasks, Codex gpt-6.1-sol at xhigh, read-only, none left running, nothing to clean up):
+
+- `Review: OEM branding and agreement in first-boot setup (omarchy)`, task `5f83608b`. Done; findings above.
+- `Review: OEM bundle build flags, installer phases and harness (omarchy-iso)`, task `ecc6f9e8`. Done; findings above.
+- `Review: braille-dot OEM logos and brand placement (omarchy + omarchy-iso delta)`, task `e41fafb5`. Done; findings above.
+
+Evidence: `~/.local/share/omarchy-iso/oem-bom-eula-evidence/` holds `xps-final-1280x800/` (the run on the heads in the PRs: the XPS dot logo, brand on the greeter and agreement only, with screenshots, recording, harness log, the script's effects and the ISO's checksum), `final-1280x800/` (the sample Acme bundle with the brand on every screen, before decisions 6 and 7), `xps-bundle/` (the XPS bundle) and `xps-logo-rendering-options.png` (the dot renderings compared). ISOs are hard-linked under `test-runs/isos/`.
+
+Local tooling, as before: `~/.local/share/omarchy-iso/qemu-test/run <checkout> <harness args>` runs the harness in a container; it mounts only the checkout's parent, so a bundle given to `--oem-config` has to be inside the worktree. `grep` in this machine's interactive shell is a wrapper function: use `command grep` when checking grep's own behaviour.
+
 # OEM first-boot UX parity
 
 Goal: the first boot of an OEM install (the owner's language, keyboard, account) looks and behaves like the ISO installer, with a one-command QEMU flow that installs an OEM ISO and drives first boot, with screenshots and a recording.
