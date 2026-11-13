@@ -19,6 +19,9 @@
 #   --encrypt          Drive the encrypted install flow (default: unencrypted)
 #   --provision              Drive the deferred-provisioning install flow: no user during install, the
 #                      first boot runs omarchy-provision-owner and creates it there
+#   --oem              Test an OEM ISO: it installs onto the VM's one disk with
+#                      no keystrokes, encrypted, and reboots into the first-boot
+#                      setup, which is then driven the way --provision drives it
 #   --free-space       Install into the free space of a synthetic Windows-style
 #                      disk (existing ESP + data partition kept) and verify the
 #                      existing partitions survive
@@ -33,6 +36,8 @@
 #   --timeout SECS     Install timeout (default 2400)
 #   --keep-running     Leave the acceptance VM running after the suite finishes
 #   --no-preview       Do not open the collected screenshots in imv
+#   --record           Record the VM's screen for the whole run (recording.mp4)
+#   --resolution WxH   Size of the VM's display (default: the firmware's choice)
 
 set -euo pipefail
 
@@ -46,6 +51,9 @@ INSTALL_TIMEOUT=2400
 BOOT_TIMEOUT=600
 ENCRYPT=false
 PROVISION=false
+OEM=false
+RECORD=false
+RESOLUTION=""
 FREE_SPACE=false
 REUSE_BASE=false
 INSTALL_ONLY=false
@@ -94,6 +102,11 @@ while (($#)); do
     --keyboard) KEYBOARD_LABEL="$2"; shift ;;
     --encrypt) ENCRYPT=true ;;
     --provision) PROVISION=true ;;
+    # An OEM install is a deferred-provisioning install nobody answers for:
+    # always full-disk and encrypted (the configurator's --oem path).
+    --oem) OEM=true; PROVISION=true; ENCRYPT=true ;;
+    --record) RECORD=true ;;
+    --resolution) RESOLUTION="$2"; shift ;;
     --free-space) FREE_SPACE=true ;;
     --reuse-base) REUSE_BASE=true ;;
     --install-only) INSTALL_ONLY=true ;;
@@ -135,7 +148,18 @@ case "$KEYBOARD_LABEL" in
   *) echo "The VM harness cannot type credentials with keyboard: $KEYBOARD_LABEL" >&2; exit 1 ;;
 esac
 
+if $OEM && $FREE_SPACE; then
+  echo "--oem installs over the whole disk, so there is no free-space install to test with it" >&2
+  exit 1
+fi
+
+if [[ -n $RESOLUTION && ! $RESOLUTION =~ ^[0-9]+x[0-9]+$ ]]; then
+  echo "--resolution takes WIDTHxHEIGHT, e.g. 2560x1600" >&2
+  exit 1
+fi
+
 omarchy-pkg-add qemu-full edk2-ovmf socat imagemagick tesseract tesseract-data-eng
+$RECORD && omarchy-pkg-add ffmpeg
 # --battery and --acpi-hid compile their SSDT with iasl.
 if $BATTERY || ((${#ACPI_HIDS[@]})); then
   omarchy-pkg-add acpica
@@ -171,6 +195,10 @@ mkdir -p "$BASE_DIR" "$RUN_DIR"
 # Unix socket paths are capped at ~108 bytes, which a run directory nested in
 # test-runs/<iso-name>/runs/<timestamp> can exceed. Keep the socket in /tmp.
 QMP_SOCK=$(mktemp -u "${TMPDIR:-/tmp}/omarchy-iso-test-qmp.XXXXXX.sock")
+# The recorder gets a monitor of its own: a QMP socket serves one client at a
+# time, and the console driver must never wait behind a screendump.
+RECORD_SOCK="${QMP_SOCK%.sock}.record.sock"
+RECORD_PID=""
 PIDFILE="$RUN_DIR/qemu.pid"
 
 log() {
@@ -226,6 +254,86 @@ stop_vm() {
   fi
 }
 
+# --record: a screendump about every quarter second for as long as the harness
+# runs, across every VM it boots, encoded into recording.mp4 at the end. The
+# screen changes size as the guest goes from firmware to KMS, so frames are
+# padded to the largest one seen.
+start_recording() {
+  $RECORD || return 0
+  mkdir -p "$RUN_DIR/frames"
+  python3 - "$RECORD_SOCK" "$RUN_DIR/frames" <<'PYTHON' &
+import json, os, signal, socket, struct, sys, time
+
+sock_path, frames = sys.argv[1], sys.argv[2]
+count, width, height, started = 0, 0, 0, time.monotonic()
+signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+
+def record(conn):
+    global count, width, height
+    # Commands go straight to the socket: a buffered writer left holding one
+    # when the VM stops is complained about on stderr as Python discards it.
+    stream = conn.makefile("r")
+    stream.readline()
+    conn.sendall(b'{"execute":"qmp_capabilities"}\n')
+    # Its answer, or the next frame would be read before it was written.
+    while "return" not in (line := stream.readline()):
+        if not line:
+            return
+    while True:
+        frame = os.path.join(frames, f"{count:06d}.png")
+        conn.sendall(json.dumps({"execute": "screendump", "arguments": {"filename": frame, "format": "png"}}).encode() + b"\n")
+        # Events share the stream; the screendump's own answer ends the wait.
+        while True:
+            line = stream.readline()
+            if not line:
+                return
+            if "return" in line or "error" in line:
+                break
+        try:
+            with open(frame, "rb") as png:
+                header = png.read(24)
+            w, h = struct.unpack(">II", header[16:24])
+            if w and h:
+                width, height = max(width, w), max(height, h)
+                count += 1
+                # A screendump takes as long as the guest's screen is big, so the
+                # frame rate that plays back in real time is only known afterwards.
+                with open(os.path.join(frames, "size"), "w") as size:
+                    size.write(f"{width + width % 2} {height + height % 2} {count / (time.monotonic() - started):.3f}\n")
+        except (OSError, struct.error):
+            pass
+        time.sleep(0.25)
+
+while True:
+    try:
+        with socket.socket(socket.AF_UNIX) as conn:
+            conn.connect(sock_path)
+            record(conn)
+    except OSError:
+        pass
+    time.sleep(0.5)
+PYTHON
+  RECORD_PID=$!
+}
+
+finish_recording() {
+  [[ -n $RECORD_PID ]] || return 0
+  kill "$RECORD_PID" 2>/dev/null || true
+  wait "$RECORD_PID" 2>/dev/null || true
+  RECORD_PID=""
+
+  local width height rate
+  read -r width height rate <"$RUN_DIR/frames/size" 2>/dev/null || return 0
+  if ffmpeg -y -loglevel error -framerate "$rate" -i "$RUN_DIR/frames/%06d.png" \
+    -vf "scale=$width:$height:force_original_aspect_ratio=decrease,pad=$width:$height:(ow-iw)/2:(oh-ih)/2,format=yuv420p" \
+    -c:v libx264 -crf 20 "$RUN_DIR/recording.mp4"; then
+    rm -rf "$RUN_DIR/frames"
+    log "Recording: $RUN_DIR/recording.mp4"
+  else
+    echo "ffmpeg could not encode the recording; the frames are in $RUN_DIR/frames" >&2
+  fi
+}
+
 open_screenshots() {
   local entry
   local -a screenshots=()
@@ -259,12 +367,14 @@ cleanup() {
     for pid in "${FAKE_PCI_PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
   fi
 
+  finish_recording
   rm -f "$RUN_DIR/.screen.ppm" "$RUN_DIR/.screen.png"
   open_screenshots
 
   return $status
 }
 trap cleanup EXIT
+start_recording
 
 start_vm() {
   local disk="$1" serial="$2"
@@ -330,6 +440,10 @@ DSL
   local net_args=(-netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" -device virtio-net-pci,netdev=net0)
   $NO_NETWORK && net_args=(-nic none)
 
+  local display_device=virtio-vga record_args=()
+  [[ -n $RESOLUTION ]] && display_device+=",xres=${RESOLUTION%x*},yres=${RESOLUTION#*x}"
+  $RECORD && record_args=(-qmp "unix:$RECORD_SOCK,server,nowait")
+
   qemu-system-x86_64 \
     -cpu "host${CPU_ID:+,$CPU_ID}" -enable-kvm -machine q35,accel=kvm \
     -smp "$(nproc)" \
@@ -339,12 +453,13 @@ DSL
     -drive if=pflash,format=raw,file="$BASE_OVMF" \
     -drive file="$disk",format=qcow2,if=none,id=drive0 \
     -device virtio-blk-pci,drive=drive0,bootindex=1 \
-    -device virtio-vga \
+    -device "$display_device" \
     -display none \
     -vnc 127.0.0.1:5 \
     -usb -device usb-tablet \
     "${net_args[@]}" \
     -qmp "unix:$QMP_SOCK,server,nowait" \
+    "${record_args[@]}" \
     -serial "file:$serial" \
     -pidfile "$PIDFILE" \
     -daemonize \
@@ -817,6 +932,13 @@ PYTHON
 }
 
 drive_configurator() {
+  if $OEM; then
+    # Nothing to drive: an OEM ISO picks the machine's one internal disk and
+    # installs without a question. A keystroke here would be a test bug.
+    log "OEM install: sending no keys"
+    return 0
+  fi
+
   log "Driving the installer wizard"
 
   # A greeter (animated logo + tagline) opens the installer; Return begins.
@@ -974,17 +1096,25 @@ drive_configurator() {
 drive_provision_owner() {
   log "Driving the deferred-provisioning first-boot setup"
 
-  # Deferred provisioning defers the keyboard step to first boot; it comes before the user form.
-  # Pick English (UK) (one row below the preselected English (US), which leads
-  # the list) so the verifier can prove the deferred step applied a non-default
-  # layout — UK leaves every letter identical to US, so the typed password (sent
-  # as raw keycodes) still matches the literal one the harness pipes to sudo.
   # A greeter (animated logo + tagline) opens first boot; Return begins.
   wait_for_screen "Linux by DHH" 600
   capture_console "success-provision-00-greeter"
   press ret
 
-  wait_for_screen "keyboard layout" 120
+  # A runtime that lets the owner pick a language asks that first, as the
+  # installer does; an older one opens on the keyboard layout.
+  wait_for_screen_any "Language" "keyboard layout" 120
+  if [[ $SCREEN_MATCHED == "Language" ]]; then
+    capture_console "success-provision-00-language"
+    press ret
+    wait_for_screen "keyboard layout" 60
+  fi
+
+  # Deferred provisioning defers the keyboard step to first boot.
+  # Pick English (UK) (one row below the preselected English (US), which leads
+  # the list) so the verifier can prove the deferred step applied a non-default
+  # layout — UK leaves every letter identical to US, so the typed password (sent
+  # as raw keycodes) still matches the literal one the harness pipes to sudo.
   if [[ $KEYBOARD_LABEL == "English (US)" ]]; then
     press down # preserve the harness's default UK provisioning coverage
   else
@@ -993,39 +1123,93 @@ drive_provision_owner() {
   capture_console "success-provision-01-keyboard-layout"
   press ret
 
-  wait_for_screen "Username" 120
-  capture_console "success-provision-02-username"
-  type_text "$GUEST_USER"
-  press ret
+  # The account questions, in whatever order this runtime asks them: each is
+  # told apart by its prompt, the only one on screen while it waits (the
+  # placeholders are too dim for OCR). The review table ends the form.
+  local screen prompt answered="" waited=0
+  while true; do
+    screen=$(ocr_screen)
+    prompt=""
+    if grep -qi "look right" <<<"$screen"; then
+      break
+    elif grep -qi "Conf *irm" <<<"$screen"; then
+      prompt=confirmation
+    elif grep -qi "Password" <<<"$screen"; then
+      prompt=password
+    elif grep -qi "Username" <<<"$screen"; then
+      prompt=username
+    elif grep -qi "Hostname" <<<"$screen"; then
+      prompt=hostname
+    elif grep -q "[A-Z][a-z]\+/[A-Z][a-z]" <<<"$screen"; then
+      # The picker's list of zones, not a heading that names the step while
+      # the guess is still being fetched: a Return sent then is lost.
+      prompt=timezone
+    fi
 
-  wait_for_screen "Password" 60
-  type_text "$GUEST_PASSWORD"
-  capture_console "success-provision-03-password"
-  press ret
+    # The screen still showing a prompt just answered is the console catching
+    # up, not the question asked twice.
+    if [[ -n $prompt && " $answered " != *" $prompt "* ]]; then
+      case $prompt in
+        username) type_text "$GUEST_USER" ;;
+        password | confirmation) type_text "$GUEST_PASSWORD" ;;
+        hostname) type_text "$GUEST_HOSTNAME" ;;
+        timezone) ;; # accept the guess that leads the list
+      esac
+      capture_console "success-provision-02-$prompt"
+      press ret
+      answered+=" $prompt"
+      waited=0
+    fi
 
-  wait_for_screen "Conf *irm" 60
-  type_text "$GUEST_PASSWORD"
-  press ret
+    if ! vm_running; then
+      echo "VM exited during first-boot setup" >&2
+      return 1
+    fi
+    # Generous: the timezone guess over first-boot networking can lag.
+    if ((waited >= 180)); then
+      capture_console "failure-provision-form-stalled"
+      echo "First-boot setup stopped answering after:${answered:- nothing}" >&2
+      return 1
+    fi
+    sleep 2
+    ((waited += 2))
+  done
 
-  # Hostname is deferred to first boot too.
-  wait_for_screen "Hostname" 60
-  type_text "$GUEST_HOSTNAME"
-  capture_console "success-provision-05-hostname"
-  press ret
-
-  # Timezone is deferred to first boot too; accept the geo-guessed default.
-  # Generous timeout: the tzupdate geo-guess over first-boot networking can lag.
-  wait_for_screen "Timezone" 180
-  capture_console "success-provision-06-timezone"
-  press ret
-
-  wait_for_screen "look right" 60
   capture_console "success-provision-07-review"
   press ret
 
-  # Finalization (user setup, LUKS re-key on encrypted installs)
-  # runs before SDDM appears.
-  capture_console "success-provision-08-finalizing"
+  # Finalization (user setup, LUKS re-key on encrypted installs) runs under the
+  # progress screen until the display manager takes the console. Its percentage
+  # is the one line bright enough for OCR, which reads the sign as anything.
+  # OCR reads nothing from a screen caught mid-redraw or gone black for the
+  # handoff, which says nothing either way: it takes two readable screens in a
+  # row without the percentage to call the progress screen gone.
+  local shots=0 gone=0 progress
+  waited=0
+  sleep 2
+  while ((gone < 2)); do
+    if ((waited >= 900)); then
+      capture_console "failure-provision-finalizing-timeout"
+      echo "Timed out waiting for first-boot setup to finish" >&2
+      return 1
+    fi
+
+    progress=$(ocr_screen | tr -d ' \n')
+    if [[ $progress =~ ^[0-9]{1,3}.?$ ]]; then
+      gone=0
+      if ((waited % 20 == 0)); then
+        printf -v prompt 'success-provision-08-finalizing-%03ds' "$waited"
+        capture_console "$prompt"
+        shots=$((shots + 1))
+      fi
+    elif [[ -n $progress ]]; then
+      gone=$((gone + 1))
+    fi
+
+    sleep 4
+    ((waited += 4))
+  done
+  ((shots)) || capture_console "success-provision-08-finalizing"
 }
 
 wait_for_install() {

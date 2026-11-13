@@ -42,6 +42,7 @@ RUN_DIR="$work"
 ISO="$work/omarchy.iso"
 BOOT_TIMEOUT=60
 FREE_SPACE=false PROVISION=false ENCRYPT=false NO_NETWORK=true
+OEM=false RECORD=false RESOLUTION=""
 touch "$SSH_KEY" "$OVMF_VARS_TEMPLATE"
 
 log() { :; }
@@ -100,6 +101,10 @@ setup=$(sed -n '/^omarchy-pkg-add qemu-full/,/^$/p' "$harness")
 omarchy-pkg-add() { added+=("$@"); }
 dependencies() { added=(); BATTERY=$1; shift; ACPI_HIDS=("$@"); eval "$setup"; }
 
+RECORD=true dependencies false
+[[ " ${added[*]} " == *" ffmpeg "* ]] || fail "--record does not install ffmpeg: ${added[*]}"
+RECORD=false
+
 dependencies true
 [[ " ${added[*]} " == *" acpica "* ]] || fail "--battery does not install acpica: ${added[*]}"
 dependencies false OVTI08F4
@@ -120,6 +125,82 @@ set -e
 grep -q "syntax error" "$work/err" || fail "the iasl error is hidden: $(cat "$work/err")"
 
 echo "ok - fake ACPI devices bring iasl with them and show its errors"
+
+# ------------------------------------------------ --resolution and --record
+#
+# The display size is the virtio-vga device's, and the recorder gets a monitor
+# of its own so the console driver never waits behind a screendump.
+
+BATTERY=false
+RECORD_SOCK="$work/record.sock" SSH_PORT=2222 MEMORY=1024 BASE_OVMF="$work/OVMF_VARS.fd" OVMF_CODE="$work/OVMF_CODE.fd" PIDFILE="$work/qemu.pid"
+qemu-system-x86_64() { printf '%s\n' "$@" >"$work/qemu-args"; }
+RESOLUTION="" RECORD=false start_vm "$work/disk.qcow2" "$work/serial.log"
+grep -qx "virtio-vga" "$work/qemu-args" || fail "the default display is no longer plain virtio-vga"
+! grep -q "record.sock" "$work/qemu-args" || fail "a run that is not recorded opens the recorder's monitor"
+RESOLUTION=2560x1600 RECORD=true start_vm "$work/disk.qcow2" "$work/serial.log"
+grep -qx "virtio-vga,xres=2560,yres=1600" "$work/qemu-args" || fail "--resolution did not size the display: $(grep vga "$work/qemu-args")"
+grep -qx "unix:$RECORD_SOCK,server,nowait" "$work/qemu-args" || fail "--record did not give the recorder a monitor"
+grep -qx "unix:$QMP_SOCK,server,nowait" "$work/qemu-args" || fail "--record took the console driver's monitor"
+RESOLUTION="" RECORD=false
+BATTERY=true
+
+echo "ok - the display takes --resolution, and --record a monitor of its own"
+
+# ---------------------------------------------------------------- recorder
+#
+# The recorder numbers a frame once QEMU has written it, and QEMU answers a
+# command only when it is done. A monitor that takes its time over the opening
+# handshake must not put the recorder one answer ahead of the frames.
+
+take start_recording
+RECORD=true RUN_DIR="$work" RECORD_PID=""
+python3 - "$RECORD_SOCK" "$work/asked" <<'PYTHON' &
+import json, socket, struct, sys, time, zlib
+
+server = socket.socket(socket.AF_UNIX)
+server.bind(sys.argv[1])
+server.listen(1)
+conn, _ = server.accept()
+stream = conn.makefile("rw")
+stream.write('{"QMP": {}}\n'); stream.flush()
+for line in stream:
+    command = json.loads(line)
+    time.sleep(0.2)
+    if command["execute"] == "screendump":
+        name = command["arguments"]["filename"]
+        with open(sys.argv[2], "a") as asked:
+            asked.write(name.rsplit("/", 1)[1] + "\n")
+        header = struct.pack(">IIBBBBB", 1280, 800, 8, 2, 0, 0, 0)
+        with open(name, "wb") as png:
+            png.write(b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + header + struct.pack(">I", zlib.crc32(b"IHDR" + header)))
+    stream.write('{"return": {}}\n'); stream.flush()
+PYTHON
+monitor=$!
+# A failure below must not leave the mock or the recorder running.
+trap 'kill "$monitor" ${RECORD_PID:+"$RECORD_PID"} 2>/dev/null; rm -rf "$work"' EXIT
+for _ in $(seq 1 50); do [[ -S $RECORD_SOCK ]] && break; command sleep 0.1; done
+start_recording 2>"$work/recorder-err"
+# Three frames, however long a loaded machine takes over them.
+for _ in $(seq 1 300); do
+  [[ -f $work/asked ]] && (($(wc -l <"$work/asked") >= 3)) && [[ -s $work/frames/size ]] && break
+  command sleep 0.1
+done
+# The VM stops first, taking the monitor from under the recorder mid-command.
+kill "$monitor" 2>/dev/null || true
+wait "$monitor" 2>/dev/null || true
+command sleep 1
+kill "$RECORD_PID" 2>/dev/null || true
+wait "$RECORD_PID" 2>/dev/null || true
+trap 'rm -rf "$work"' EXIT
+RECORD=false RECORD_PID=""
+[[ ! -s $work/recorder-err ]] || fail "the recorder complained when its VM stopped: $(cat "$work/recorder-err")"
+[[ $(sed -n 1p "$work/asked") == 000000.png && $(sed -n 2p "$work/asked") == 000001.png && $(sed -n 3p "$work/asked") == 000002.png ]] ||
+  fail "the recorder did not number its frames one per screendump: $(tr '\n' ' ' <"$work/asked")"
+read -r frame_width frame_height _ <"$work/frames/size"
+[[ $frame_width == 1280 && $frame_height == 800 ]] || fail "the recorder misread the frame size: $(cat "$work/frames/size")"
+rm -rf "$work/frames" "$RECORD_SOCK"
+
+echo "ok - the recorder numbers one frame per finished screendump"
 
 # ------------------------------------------- --reuse-base and fake hardware
 #
@@ -163,6 +244,7 @@ echo "ok - each fake hardware setting installs and reuses its own base image"
 
 take cleanup
 HTTP_PID="" RUN_DIR="$work"
+finish_recording() { :; }
 open_screenshots() { :; }
 stop_vm() {
   local pid
@@ -194,6 +276,97 @@ for pid in "${FAKE_PCI_PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
 (($(alive) == 0)) || fail "the fake device servers were left running after the VM stopped"
 
 echo "ok - fake PCI devices stay up as long as their VM, and stop after it"
+
+# ------------------------------------------------------------------- --oem
+#
+# An OEM ISO installs without a question, so the harness must not answer one:
+# a key sent here could land in the first-boot setup that follows.
+
+(
+  take drive_configurator
+  OEM=true
+  press() { fail "the harness pressed $1 during an OEM install"; }
+  type_text() { fail "the harness typed during an OEM install"; }
+  wait_for_screen() { fail "the harness waited for an installer screen during an OEM install"; }
+  drive_configurator
+)
+
+# An OEM install is always full-disk, so asking for the free-space fixture
+# with it is refused before a disk is made or a package installed.
+touch "$work/omarchy-oem.iso"
+mkdir -p "$work/refuse"
+printf '#!/bin/bash\necho reached >"%s/refuse/setup"\nexit 1\n' "$work" >"$work/refuse/omarchy-pkg-add"
+chmod +x "$work/refuse/omarchy-pkg-add"
+! PATH="$work/refuse:$PATH" bash "$harness" "$work/omarchy-oem.iso" --oem --free-space 2>"$work/err" ||
+  fail "--oem --free-space was accepted"
+grep -q -- "--oem installs over the whole disk" "$work/err" || fail "--oem --free-space was refused without saying why: $(cat "$work/err")"
+[[ ! -e $work/refuse/setup ]] || fail "--oem --free-space got as far as installing dependencies"
+
+echo "ok - an OEM install is sent no keys, and is not asked for a free-space install"
+
+# ------------------------------------------------------- first-boot setup
+#
+# First-boot setup asks the account questions in the installer's order on a
+# runtime that has the language step and in its older order on one that does
+# not. The driver answers whichever prompt is on screen, each once.
+
+(
+  take drive_provision_owner wait_for_screen wait_for_screen_any
+  KEYBOARD_LABEL="English (US)" GUEST_USER=owner GUEST_PASSWORD=secret GUEST_HOSTNAME=box
+  press() {
+    [[ $(sed -n "$(($(<"$work/screen") - 1))p" "$work/screens") != "Let's set your timezone..." ]] ||
+      fail "the harness answered the timezone heading, before the picker was up"
+    echo "press $1" >>"$work/actions"
+  }
+  type_text() { echo "type $1" >>"$work/actions"; }
+  capture_console() { [[ $1 != *finalizing-* ]] || echo "$1" >>"$work/captured-progress"; }
+  # As offline_install above: an `||` around the driver would switch set -e
+  # off inside it and hide a step that failed.
+  drive() {
+    : >"$work/actions" >"$work/captured-progress"
+    screens "$@"
+    set +e
+    (set -e; drive_provision_owner) 2>"$work/err"
+    driven=$?
+    set -e
+  }
+  driven_ok() { ((driven == 0)) || fail "first-boot setup was not driven: $(cat "$work/err")"; }
+
+  zones="Timezone > Filter... America/Chicago Africa/Abidjan" # one line: a scripted screen is a line
+  drive "Linux by DHH" "Language" "Select keyboard layout" "$zones" "Username>" "Username>" "Password>" \
+    "Confirm>" "Hostname>" "Does this look right?" "477" "" "" "48>" "desktop" "" "login:" "never read"
+  driven_ok
+  # OCR reads the percent sign as anything, and from a screen caught mid-redraw
+  # nothing at all: the progress screen lasts until two readable screens in a
+  # row are not it.
+  [[ -s $work/captured-progress && $(<"$work/screen") == 18 ]] || fail "the setup progress screen was not followed to its end"
+  expected="press ret,press ret,press down,press ret,press ret,type owner,press ret,type secret,press ret,type secret,press ret,type box,press ret,press ret,"
+  [[ $(tr '\n' ',' <"$work/actions") == "$expected" ]] ||
+    fail "the installer's order was answered as: $(tr '\n' ' ' <"$work/actions")"
+
+  # The older runtime names the step in a heading while it fetches its guess;
+  # a Return then is lost, so only the picker itself is answered.
+  drive "Linux by DHH" "Select keyboard layout" "Username>" "Password>" "Confirm>" "Hostname>" \
+    "Let's set your timezone..." "$zones" "Does this look right?" "desktop" "desktop"
+  driven_ok
+  expected="press ret,press down,press ret,type owner,press ret,type secret,press ret,type secret,press ret,type box,press ret,press ret,press ret,"
+  [[ $(tr '\n' ',' <"$work/actions") == "$expected" ]] ||
+    fail "the older order was answered as: $(tr '\n' ' ' <"$work/actions")"
+
+  # A form that stops on a screen the driver cannot answer fails the run.
+  drive "Linux by DHH" "Select keyboard layout" "Passwords didn't match!"
+  ((driven != 0)) || fail "a first-boot form that stalled passed"
+
+  # Setup that never leaves its progress screen, or leaves the screen black,
+  # fails the run instead of waiting forever or passing unseen.
+  for stuck in "50%" ""; do
+    drive "Linux by DHH" "Select keyboard layout" "Does this look right?" "$stuck"
+    ((driven != 0)) && grep -q "Timed out waiting for first-boot setup to finish" "$work/err" ||
+      fail "first-boot setup stuck on '${stuck:-a blank screen}' did not time out: $(cat "$work/err")"
+  done
+)
+
+echo "ok - first-boot setup is answered in whichever order it asks"
 
 # The free-space fixture has existing partitions. Drive the real wizard
 # function against the product's actual ordering, refusing an erase choice.
