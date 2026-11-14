@@ -42,7 +42,7 @@ RUN_DIR="$work"
 ISO="$work/omarchy.iso"
 BOOT_TIMEOUT=60
 FREE_SPACE=false PROVISION=false ENCRYPT=false NO_NETWORK=true
-OEM=false RECORD=false RESOLUTION=""
+OEM=false
 touch "$SSH_KEY" "$OVMF_VARS_TEMPLATE"
 
 log() { :; }
@@ -101,10 +101,6 @@ setup=$(sed -n '/^omarchy-pkg-add qemu-full/,/^$/p' "$harness")
 omarchy-pkg-add() { added+=("$@"); }
 dependencies() { added=(); BATTERY=$1; shift; ACPI_HIDS=("$@"); eval "$setup"; }
 
-RECORD=true dependencies false
-[[ " ${added[*]} " == *" ffmpeg "* ]] || fail "--record does not install ffmpeg: ${added[*]}"
-RECORD=false
-
 dependencies true
 [[ " ${added[*]} " == *" acpica "* ]] || fail "--battery does not install acpica: ${added[*]}"
 dependencies false OVTI08F4
@@ -125,82 +121,6 @@ set -e
 grep -q "syntax error" "$work/err" || fail "the iasl error is hidden: $(cat "$work/err")"
 
 echo "ok - fake ACPI devices bring iasl with them and show its errors"
-
-# ------------------------------------------------ --resolution and --record
-#
-# The display size is the virtio-vga device's, and the recorder gets a monitor
-# of its own so the console driver never waits behind a screendump.
-
-BATTERY=false
-RECORD_SOCK="$work/record.sock" SSH_PORT=2222 MEMORY=1024 BASE_OVMF="$work/OVMF_VARS.fd" OVMF_CODE="$work/OVMF_CODE.fd" PIDFILE="$work/qemu.pid"
-qemu-system-x86_64() { printf '%s\n' "$@" >"$work/qemu-args"; }
-RESOLUTION="" RECORD=false start_vm "$work/disk.qcow2" "$work/serial.log"
-grep -qx "virtio-vga" "$work/qemu-args" || fail "the default display is no longer plain virtio-vga"
-! grep -q "record.sock" "$work/qemu-args" || fail "a run that is not recorded opens the recorder's monitor"
-RESOLUTION=2560x1600 RECORD=true start_vm "$work/disk.qcow2" "$work/serial.log"
-grep -qx "virtio-vga,xres=2560,yres=1600" "$work/qemu-args" || fail "--resolution did not size the display: $(grep vga "$work/qemu-args")"
-grep -qx "unix:$RECORD_SOCK,server,nowait" "$work/qemu-args" || fail "--record did not give the recorder a monitor"
-grep -qx "unix:$QMP_SOCK,server,nowait" "$work/qemu-args" || fail "--record took the console driver's monitor"
-RESOLUTION="" RECORD=false
-BATTERY=true
-
-echo "ok - the display takes --resolution, and --record a monitor of its own"
-
-# ---------------------------------------------------------------- recorder
-#
-# The recorder numbers a frame once QEMU has written it, and QEMU answers a
-# command only when it is done. A monitor that takes its time over the opening
-# handshake must not put the recorder one answer ahead of the frames.
-
-take start_recording
-RECORD=true RUN_DIR="$work" RECORD_PID=""
-python3 - "$RECORD_SOCK" "$work/asked" <<'PYTHON' &
-import json, socket, struct, sys, time, zlib
-
-server = socket.socket(socket.AF_UNIX)
-server.bind(sys.argv[1])
-server.listen(1)
-conn, _ = server.accept()
-stream = conn.makefile("rw")
-stream.write('{"QMP": {}}\n'); stream.flush()
-for line in stream:
-    command = json.loads(line)
-    time.sleep(0.2)
-    if command["execute"] == "screendump":
-        name = command["arguments"]["filename"]
-        with open(sys.argv[2], "a") as asked:
-            asked.write(name.rsplit("/", 1)[1] + "\n")
-        header = struct.pack(">IIBBBBB", 1280, 800, 8, 2, 0, 0, 0)
-        with open(name, "wb") as png:
-            png.write(b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + header + struct.pack(">I", zlib.crc32(b"IHDR" + header)))
-    stream.write('{"return": {}}\n'); stream.flush()
-PYTHON
-monitor=$!
-# A failure below must not leave the mock or the recorder running.
-trap 'kill "$monitor" ${RECORD_PID:+"$RECORD_PID"} 2>/dev/null; rm -rf "$work"' EXIT
-for _ in $(seq 1 50); do [[ -S $RECORD_SOCK ]] && break; command sleep 0.1; done
-start_recording 2>"$work/recorder-err"
-# Three frames, however long a loaded machine takes over them.
-for _ in $(seq 1 300); do
-  [[ -f $work/asked ]] && (($(wc -l <"$work/asked") >= 3)) && [[ -s $work/frames/size ]] && break
-  command sleep 0.1
-done
-# The VM stops first, taking the monitor from under the recorder mid-command.
-kill "$monitor" 2>/dev/null || true
-wait "$monitor" 2>/dev/null || true
-command sleep 1
-kill "$RECORD_PID" 2>/dev/null || true
-wait "$RECORD_PID" 2>/dev/null || true
-trap 'rm -rf "$work"' EXIT
-RECORD=false RECORD_PID=""
-[[ ! -s $work/recorder-err ]] || fail "the recorder complained when its VM stopped: $(cat "$work/recorder-err")"
-[[ $(sed -n 1p "$work/asked") == 000000.png && $(sed -n 2p "$work/asked") == 000001.png && $(sed -n 3p "$work/asked") == 000002.png ]] ||
-  fail "the recorder did not number its frames one per screendump: $(tr '\n' ' ' <"$work/asked")"
-read -r frame_width frame_height _ <"$work/frames/size"
-[[ $frame_width == 1280 && $frame_height == 800 ]] || fail "the recorder misread the frame size: $(cat "$work/frames/size")"
-rm -rf "$work/frames" "$RECORD_SOCK"
-
-echo "ok - the recorder numbers one frame per finished screendump"
 
 # ------------------------------------------- --reuse-base and fake hardware
 #
@@ -244,7 +164,6 @@ echo "ok - each fake hardware setting installs and reuses its own base image"
 
 take cleanup
 HTTP_PID="" RUN_DIR="$work"
-finish_recording() { :; }
 open_screenshots() { :; }
 stop_vm() {
   local pid

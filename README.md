@@ -341,17 +341,17 @@ The harness syncs the acceptance suite from `$OMARCHY_PATH` when it is available
 
 Pass `--encrypt` to drive the encrypted install flow (including typing the LUKS passphrase at boot) instead of the unencrypted one. Pass `--no-preview` to collect the same visual artifacts without opening them in `imv` when the run finishes.
 
-Pass `--oem` to test an OEM ISO: the harness sends the install no keys, waits for it to reboot on its own, then drives the first-boot owner setup (language, keyboard, account) and carries on as above. `--record` saves the VM's screen for the whole run as `recording.mp4` beside the screenshots, and `--resolution 2560x1600` sizes the VM's display, which is what decides the console font size the installer and first-boot setup pick.
+Pass `--oem` to test an OEM ISO: the harness sends the install no keys, waits for it to reboot on its own, then drives the first-boot owner setup (language, keyboard, account) and carries on as above.
 
 ```bash
 ./bin/omarchy-iso-make --oem --edge --keep-pkg-cache --no-boot-offer
-./bin/omarchy-iso-test release/omarchy-oem-*.iso --oem --record --install-only
+./bin/omarchy-iso-test release/omarchy-oem-*.iso --oem --install-only
 ```
 
 For an ISO built with `--oem-config`, pass the harness the same file. Where the config has an agreement, it drives it: reads on, comes back from Ctrl+C's reboot offer and from declining, reads to the end and accepts. Once the installed system is up it checks that the bundle and the record of acceptance are on it, and saves both as `oem-setup.txt`.
 
 ```bash
-./bin/omarchy-iso-test release/omarchy-oem-*.iso --oem --oem-config acme/oem.json --record --install-only
+./bin/omarchy-iso-test release/omarchy-oem-*.iso --oem --oem-config acme/oem.json --install-only
 ```
 
 ## Integration testing the ISO

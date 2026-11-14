@@ -39,8 +39,6 @@
 #   --timeout SECS     Install timeout (default 2400)
 #   --keep-running     Leave the acceptance VM running after the suite finishes
 #   --no-preview       Do not open the collected screenshots in imv
-#   --record           Record the VM's screen for the whole run (recording.mp4)
-#   --resolution WxH   Size of the VM's display (default: the firmware's choice)
 
 set -euo pipefail
 
@@ -56,8 +54,6 @@ ENCRYPT=false
 PROVISION=false
 OEM=false
 OEM_CONFIG=""
-RECORD=false
-RESOLUTION=""
 FREE_SPACE=false
 REUSE_BASE=false
 INSTALL_ONLY=false
@@ -110,8 +106,6 @@ while (($#)); do
     # always full-disk and encrypted (the configurator's --oem path).
     --oem) OEM=true; PROVISION=true; ENCRYPT=true ;;
     --oem-config) OEM_CONFIG="$2"; shift ;;
-    --record) RECORD=true ;;
-    --resolution) RESOLUTION="$2"; shift ;;
     --free-space) FREE_SPACE=true ;;
     --reuse-base) REUSE_BASE=true ;;
     --install-only) INSTALL_ONLY=true ;;
@@ -169,13 +163,7 @@ if [[ -n $OEM_CONFIG ]]; then
   fi
 fi
 
-if [[ -n $RESOLUTION && ! $RESOLUTION =~ ^[0-9]+x[0-9]+$ ]]; then
-  echo "--resolution takes WIDTHxHEIGHT, e.g. 2560x1600" >&2
-  exit 1
-fi
-
 omarchy-pkg-add qemu-full edk2-ovmf socat imagemagick tesseract tesseract-data-eng
-$RECORD && omarchy-pkg-add ffmpeg
 # --battery and --acpi-hid compile their SSDT with iasl.
 if $BATTERY || ((${#ACPI_HIDS[@]})); then
   omarchy-pkg-add acpica
@@ -229,10 +217,6 @@ fi
 # Unix socket paths are capped at ~108 bytes, which a run directory nested in
 # test-runs/<iso-name>/runs/<timestamp> can exceed. Keep the socket in /tmp.
 QMP_SOCK=$(mktemp -u "${TMPDIR:-/tmp}/omarchy-iso-test-qmp.XXXXXX.sock")
-# The recorder gets a monitor of its own: a QMP socket serves one client at a
-# time, and the console driver must never wait behind a screendump.
-RECORD_SOCK="${QMP_SOCK%.sock}.record.sock"
-RECORD_PID=""
 PIDFILE="$RUN_DIR/qemu.pid"
 
 log() {
@@ -288,86 +272,6 @@ stop_vm() {
   fi
 }
 
-# --record: a screendump about every quarter second for as long as the harness
-# runs, across every VM it boots, encoded into recording.mp4 at the end. The
-# screen changes size as the guest goes from firmware to KMS, so frames are
-# padded to the largest one seen.
-start_recording() {
-  $RECORD || return 0
-  mkdir -p "$RUN_DIR/frames"
-  python3 - "$RECORD_SOCK" "$RUN_DIR/frames" <<'PYTHON' &
-import json, os, signal, socket, struct, sys, time
-
-sock_path, frames = sys.argv[1], sys.argv[2]
-count, width, height, started = 0, 0, 0, time.monotonic()
-signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
-
-def record(conn):
-    global count, width, height
-    # Commands go straight to the socket: a buffered writer left holding one
-    # when the VM stops is complained about on stderr as Python discards it.
-    stream = conn.makefile("r")
-    stream.readline()
-    conn.sendall(b'{"execute":"qmp_capabilities"}\n')
-    # Its answer, or the next frame would be read before it was written.
-    while "return" not in (line := stream.readline()):
-        if not line:
-            return
-    while True:
-        frame = os.path.join(frames, f"{count:06d}.png")
-        conn.sendall(json.dumps({"execute": "screendump", "arguments": {"filename": frame, "format": "png"}}).encode() + b"\n")
-        # Events share the stream; the screendump's own answer ends the wait.
-        while True:
-            line = stream.readline()
-            if not line:
-                return
-            if "return" in line or "error" in line:
-                break
-        try:
-            with open(frame, "rb") as png:
-                header = png.read(24)
-            w, h = struct.unpack(">II", header[16:24])
-            if w and h:
-                width, height = max(width, w), max(height, h)
-                count += 1
-                # A screendump takes as long as the guest's screen is big, so the
-                # frame rate that plays back in real time is only known afterwards.
-                with open(os.path.join(frames, "size"), "w") as size:
-                    size.write(f"{width + width % 2} {height + height % 2} {count / (time.monotonic() - started):.3f}\n")
-        except (OSError, struct.error):
-            pass
-        time.sleep(0.25)
-
-while True:
-    try:
-        with socket.socket(socket.AF_UNIX) as conn:
-            conn.connect(sock_path)
-            record(conn)
-    except OSError:
-        pass
-    time.sleep(0.5)
-PYTHON
-  RECORD_PID=$!
-}
-
-finish_recording() {
-  [[ -n $RECORD_PID ]] || return 0
-  kill "$RECORD_PID" 2>/dev/null || true
-  wait "$RECORD_PID" 2>/dev/null || true
-  RECORD_PID=""
-
-  local width height rate
-  read -r width height rate <"$RUN_DIR/frames/size" 2>/dev/null || return 0
-  if ffmpeg -y -loglevel error -framerate "$rate" -i "$RUN_DIR/frames/%06d.png" \
-    -vf "scale=$width:$height:force_original_aspect_ratio=decrease,pad=$width:$height:(ow-iw)/2:(oh-ih)/2,format=yuv420p" \
-    -c:v libx264 -crf 20 "$RUN_DIR/recording.mp4"; then
-    rm -rf "$RUN_DIR/frames"
-    log "Recording: $RUN_DIR/recording.mp4"
-  else
-    echo "ffmpeg could not encode the recording; the frames are in $RUN_DIR/frames" >&2
-  fi
-}
-
 open_screenshots() {
   local entry
   local -a screenshots=()
@@ -401,14 +305,12 @@ cleanup() {
     for pid in "${FAKE_PCI_PIDS[@]}"; do kill "$pid" 2>/dev/null || true; done
   fi
 
-  finish_recording
   rm -f "$RUN_DIR/.screen.ppm" "$RUN_DIR/.screen.png"
   open_screenshots
 
   return $status
 }
 trap cleanup EXIT
-start_recording
 
 start_vm() {
   local disk="$1" serial="$2"
@@ -474,10 +376,6 @@ DSL
   local net_args=(-netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22" -device virtio-net-pci,netdev=net0)
   $NO_NETWORK && net_args=(-nic none)
 
-  local display_device=virtio-vga record_args=()
-  [[ -n $RESOLUTION ]] && display_device+=",xres=${RESOLUTION%x*},yres=${RESOLUTION#*x}"
-  $RECORD && record_args=(-qmp "unix:$RECORD_SOCK,server,nowait")
-
   qemu-system-x86_64 \
     -cpu "host${CPU_ID:+,$CPU_ID}" -enable-kvm -machine q35,accel=kvm \
     -smp "$(nproc)" \
@@ -487,13 +385,12 @@ DSL
     -drive if=pflash,format=raw,file="$BASE_OVMF" \
     -drive file="$disk",format=qcow2,if=none,id=drive0 \
     -device virtio-blk-pci,drive=drive0,bootindex=1 \
-    -device "$display_device" \
+    -device virtio-vga \
     -display none \
     -vnc 127.0.0.1:5 \
     -usb -device usb-tablet \
     "${net_args[@]}" \
     -qmp "unix:$QMP_SOCK,server,nowait" \
-    "${record_args[@]}" \
     -serial "file:$serial" \
     -pidfile "$PIDFILE" \
     -daemonize \
