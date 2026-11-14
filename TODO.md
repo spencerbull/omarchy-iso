@@ -35,7 +35,9 @@ Plan:
 - [x] Greptile on 436's new head, P1, taken: `omarchy-iso-release --no-make` after an OEM build would have published it as the release, since its name ends as an ordinary build's does. The release now takes only a build named by its date (`c325042` on 436, merged into 437 as `ee8a301`); the test was shown failing with the old selector.
 - [x] VM run of the harness without the recorder, on the XPS ISO (built before these last installer changes): exit 0, bundle and record verified, 23 screenshots, no recording. Run directory `test-runs/omarchy-oem-xps-final-encrypted-provision/runs/20261114-032938`.
 - [x] CI on 436 and 437 failed `x86_64: default` and `encrypted` in the `factory-reset` scenario ("Timed out driving the first-boot form"), as quattro's own scheduled run 43522446677 does at the same base: that scenario's form driver did not know the language step omacom/omarchy#18783 added. Taught it (`a94827f` on 436, merged into 437 as `1a8a0b0`). Not run here: the scenario needs a full interactive-ISO install and reset; the PRs' own CI is the check.
-- [ ] Human gates: merging any of the three PRs; closing the fork's PR 2.
+- [x] 436 merged by the user on 2026-11-14 (squashed, `176f540` on quattro; quattro's tree is 436's head `a94827f` exactly). 437 followed it: quattro merged into `oem-bundle` (`f89538e`, tree unchanged) and its base moved to quattro, where it shows the bundle alone (20 files).
+- [ ] Human gates: merging 437 and omacom/omarchy#18841; closing the fork's PR 2; deleting the merged `oem-zero-touch-iso` branch on omacom/omarchy-iso.
+
 
 Not run: a factory reset on an OEM install, aarch64, physical hardware, a resolution other than 1280x800, a first boot in a language other than English, and a plain `--oem` ISO with no bundle after the last change to the greeter.
 
